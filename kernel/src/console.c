@@ -1,4 +1,4 @@
-#include <aurelian/kernel.h>
+#include "aurelian/kernel.h"
 
 enum {
     VGA_WIDTH = 80,
@@ -19,7 +19,8 @@ static void console_newline(struct aurelion_console *console)
     }
 }
 
-void aurelion_console_init(struct aurelion_console *console, volatile uint16_t *vga_text)
+void aurelion_console_init(struct aurelion_console *console,
+                           volatile uint16_t *vga_text)
 {
     console->vga_text = vga_text;
     console->column = 0;
@@ -28,12 +29,14 @@ void aurelion_console_init(struct aurelion_console *console, volatile uint16_t *
 
     for (size_t row = 0; row < VGA_HEIGHT; row++) {
         for (size_t column = 0; column < VGA_WIDTH; column++) {
-            console->vga_text[(row * VGA_WIDTH) + column] = vga_entry(' ', console->color);
+            console->vga_text[(row * VGA_WIDTH) + column] =
+                vga_entry(' ', console->color);
         }
     }
 }
 
-void aurelion_console_write(struct aurelion_console *console, const char *text)
+void aurelion_console_write(struct aurelion_console *console,
+                            const char *text)
 {
     for (size_t i = 0; text[i] != '\0'; i++) {
         if (text[i] == '\n') {
@@ -41,7 +44,8 @@ void aurelion_console_write(struct aurelion_console *console, const char *text)
             continue;
         }
 
-        console->vga_text[(console->row * VGA_WIDTH) + console->column] = vga_entry(text[i], console->color);
+        console->vga_text[(console->row * VGA_WIDTH) + console->column] =
+            vga_entry(text[i], console->color);
         console->column++;
 
         if (console->column == VGA_WIDTH) {
