@@ -4,6 +4,7 @@
 
 _start:
     cli
+    /* boot_info pointer is already in %rdi from the loader */
     mov %rdi, %rdi
     call aurelion_kernel_main
 .hang:

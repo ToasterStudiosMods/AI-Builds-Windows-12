@@ -6,11 +6,11 @@
 #define AURELION_BOOT_MAGIC 0x414F53524C4E4255ULL /* "AOSRLNBU" marker */
 #define AURELION_BOOT_ABI_VERSION 1u
 
-#define AURELION_MEM_USABLE 1u
-#define AURELION_MEM_RESERVED 2u
-#define AURELION_MEM_ACPI_RECLAIMABLE 3u
-#define AURELION_MEM_ACPI_NVS 4u
-#define AURELION_MEM_BAD 5u
+#define AURELION_MEM_USABLE             1u
+#define AURELION_MEM_RESERVED           2u
+#define AURELION_MEM_ACPI_RECLAIMABLE   3u
+#define AURELION_MEM_ACPI_NVS           4u
+#define AURELION_MEM_BAD                5u
 
 struct aurelion_memory_region {
     uint64_t base;
@@ -48,8 +48,11 @@ struct aurelion_boot_info {
     uint64_t command_line_physical;
 };
 
-_Static_assert(sizeof(struct aurelion_memory_region) == 24, "memory region ABI size changed");
-_Static_assert(sizeof(struct aurelion_framebuffer) == 48, "framebuffer ABI size changed");
-_Static_assert(sizeof(struct aurelion_boot_info) == 128, "boot info ABI size changed");
+_Static_assert(sizeof(struct aurelion_memory_region) == 24,
+               "memory region ABI size changed");
+_Static_assert(sizeof(struct aurelion_framebuffer) == 48,
+               "framebuffer ABI size changed");
+_Static_assert(sizeof(struct aurelion_boot_info) == 128,
+               "boot info ABI size changed");
 
 #endif
