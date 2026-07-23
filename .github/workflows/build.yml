@@ -1,0 +1,53 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-aurelion:
+    name: Build Aurelion kernel (custom UEFI/multiboot loader)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+
+      - name: Run make check
+        run: make clean && make check
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aurelion-kernel
+          path: |
+            build/aurelion.elf
+            build/aurelion.bin
+
+  build-aurelian-os-v1:
+    name: Build aurelian-os-v1 (GRUB/Multiboot2 baseline)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aurelian-os-v1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ISO toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential xorriso grub-pc-bin grub-efi-amd64-bin mtools
+
+      - name: Build kernel
+        run: make clean && make kernel
+
+      - name: Build ISO
+        run: make iso
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aurelian-os-v1-iso
+          path: aurelian-os-v1/aurelian-os.iso
