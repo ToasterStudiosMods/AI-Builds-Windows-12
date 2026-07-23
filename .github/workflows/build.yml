@@ -13,18 +13,33 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install toolchain
-        run: sudo apt-get update && sudo apt-get install -y build-essential
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc-multilib mingw-w64 \
+            xorriso grub-pc-bin grub-efi-amd64-bin mtools dosfstools
 
       - name: Run make check
         run: make clean && make check
 
-      - name: Upload kernel artifacts
+      - name: Build stage-1 + ISO
+        run: make iso
+
+      - name: Build UEFI loader + ESP image
+        run: make esp
+
+      - name: Upload kernel/image artifacts
         uses: actions/upload-artifact@v4
         with:
           name: aurelion-kernel
+          if-no-files-found: warn
           path: |
             build/aurelion.elf
             build/aurelion.bin
+            build/stage1.elf
+            build/stage1.bin
+            build/aurelian.iso
+            build/BOOTX64.EFI
+            build/aurelion-esp.img
 
   build-aurelian-os-v1:
     name: Build aurelian-os-v1 (GRUB/Multiboot2 baseline)
