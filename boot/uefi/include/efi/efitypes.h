@@ -1,7 +1,16 @@
 #ifndef AURELIAN_EFI_TYPES_H
 #define AURELIAN_EFI_TYPES_H
 
+#include <stddef.h>
 #include <stdint.h>
+
+/* UEFI x86-64 functions use the Microsoft x64 calling convention,
+ * regardless of the host compiler's default (System V on Linux/gcc). */
+#if defined(__x86_64__) || defined(_M_X64)
+#define EFIAPI __attribute__((ms_abi))
+#else
+#define EFIAPI
+#endif
 
 typedef uint8_t  UINT8;
 typedef uint16_t UINT16;
@@ -12,14 +21,19 @@ typedef int16_t  INT16;
 typedef int32_t  INT32;
 typedef int64_t  INT64;
 
-typedef UINT8   BOOLEAN;
-typedef UINT8   UINTN;
-typedef INTN    INTN;
-typedef char    CHAR8;
+/* UINTN/INTN are native register width - 8 bytes on x86-64 */
+typedef uint64_t UINTN;
+typedef int64_t  INTN;
+
+typedef UINT8    BOOLEAN;
+typedef char     CHAR8;
 typedef uint16_t CHAR16;
+typedef void     VOID;
 
 typedef void *EFI_HANDLE;
 typedef UINTN EFI_STATUS;
+
+#define EFI_ERROR(Status) (((INTN)(Status)) < 0)
 
 #define EFI_SUCCESS             0
 #define EFI_LOAD_ERROR          1
@@ -44,7 +58,6 @@ typedef UINTN EFI_STATUS;
 #define EFI_ALREADY_STARTED     20
 #define EFI_ABORTED             21
 #define EFI_PROTOCOL_ERROR      23
-#define EFI_NOT_FOUND           14
 
 /* Memory types */
 #define EFI_RESERVED_MEMORY_TYPE       0
@@ -81,12 +94,36 @@ typedef UINTN EFI_STATUS;
 #define EFI_MEMORY_RO   0x0000000000020000ULL
 #define EFI_MEMORY_RUNTIME  0x8000000000000000ULL
 
-/* Locate search type */
-#define EFI_LOCATE_ALL_HANDLES       0
-#define EFI_LOCATE_BY_REGISTER_NOTIFY 1
-#define EFI_LOCATE_BY_PROTOCOL       2
+/* Scalar/enum typedefs shared by EFI_BOOT_SERVICES (efi.h) and the
+ * protocol definitions (efiprotocols.h) - defined once, here, so both
+ * headers can see them regardless of include order. */
+typedef UINT32 EFI_MEMORY_TYPE;
+typedef UINTN  EFI_TPL;
+typedef UINTN  EFI_NATIVE_INTERFACE;
 
-/* Physical address */
+typedef enum {
+    EfiTimerCancel,
+    EfiTimerPeriodic,
+    EfiTimerRelative,
+} EFI_TIMER_DELAY;
+
+typedef enum {
+    AllHandles,
+    ByRegisterNotify,
+    ByProtocol
+} EFI_LOCATE_SEARCH_TYPE;
+
+typedef UINT64 EFI_LBA;
+
+typedef enum {
+    PixelRedGreenBlueReserved8BitPerColor,
+    PixelBlueGreenRedReserved8BitPerColor,
+    PixelBitMask,
+    PixelBltOnly,
+    PixelFormatMax,
+} EFI_GRAPHICS_PIXEL_FORMAT;
+
+/* Physical/virtual address */
 typedef uint64_t EFI_PHYSICAL_ADDRESS;
 typedef uint64_t EFI_VIRTUAL_ADDRESS;
 
@@ -122,12 +159,44 @@ typedef struct {
     } Union;
 } EFI_CAPSULE_BLOCK_DESCRIPTOR;
 
+/* Forward declarations for structs fully defined in efi.h / efiprotocols.h.
+ * Only pointers to these are needed by the declarations in this header. */
+typedef struct EFI_SYSTEM_TABLE EFI_SYSTEM_TABLE;
+typedef struct _EFI_DEVICE_PATH_PROTOCOL EFI_DEVICE_PATH_PROTOCOL;
+
 /* Simple text output protocol */
 typedef struct _EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
+
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_RESET)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
+    BOOLEAN ExtendedVerification);
 
 typedef EFI_STATUS (EFIAPI *EFI_TEXT_STRING)(
     EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
     CHAR16 *String);
+
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_QUERY_MODE)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
+    UINTN ModeNumber, UINTN *Columns, UINTN *Rows);
+
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_SET_MODE)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
+    UINTN ModeNumber);
+
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_SET_ATTRIBUTE)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
+    UINTN Attribute);
+
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_CLEAR_SCREEN)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This);
+
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_SET_CURSOR_POSITION)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
+    UINTN Column, UINTN Row);
+
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_ENABLE_CURSOR)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
+    BOOLEAN Visible);
 
 typedef struct {
     INT32 MaxMode;
@@ -139,15 +208,15 @@ typedef struct {
 } EFI_SIMPLE_TEXT_OUTPUT_MODE;
 
 struct _EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL {
-    EFI_TEXT_STRING        Reset;
-    EFI_TEXT_STRING        OutputString;
-    EFI_TEXT_STRING        TestString;
-    EFI_TEXT_STRING        QueryMode;
-    EFI_TEXT_STRING        SetMode;
-    EFI_TEXT_STRING        SetAttribute;
-    EFI_TEXT_STRING        ClearScreen;
-    EFI_TEXT_STRING        SetCursorPosition;
-    EFI_TEXT_STRING        EnableCursor;
+    EFI_TEXT_RESET               Reset;
+    EFI_TEXT_STRING              OutputString;
+    EFI_TEXT_STRING              TestString;
+    EFI_TEXT_QUERY_MODE          QueryMode;
+    EFI_TEXT_SET_MODE            SetMode;
+    EFI_TEXT_SET_ATTRIBUTE       SetAttribute;
+    EFI_TEXT_CLEAR_SCREEN        ClearScreen;
+    EFI_TEXT_SET_CURSOR_POSITION SetCursorPosition;
+    EFI_TEXT_ENABLE_CURSOR       EnableCursor;
     EFI_SIMPLE_TEXT_OUTPUT_MODE *Mode;
 };
 
@@ -156,7 +225,7 @@ typedef struct _EFI_SIMPLE_TEXT_INPUT_PROTOCOL EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
 
 struct _EFI_SIMPLE_TEXT_INPUT_PROTOCOL {
     void *Reset;
-    EFI_STATUS (*ReadKeyStroke)(EFI_SIMPLE_TEXT_INPUT_PROTOCOL *This, void *Key);
+    EFI_STATUS (EFIAPI *ReadKeyStroke)(EFI_SIMPLE_TEXT_INPUT_PROTOCOL *This, void *Key);
     void *WaitForKey;
 };
 
