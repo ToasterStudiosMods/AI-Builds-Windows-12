@@ -5,6 +5,7 @@
 #include "aurelian/pmm.h"
 #include "aurelian/vmm.h"
 #include "aurelian/heap.h"
+#include "aurelian/framebuffer.h"
 
 #define VGA_TEXT_BUFFER ((volatile uint16_t *)0xB8000)
 
@@ -58,6 +59,9 @@ int aurelion_validate_boot_info(const struct aurelion_boot_info *boot_info)
 void aurelion_kernel_main(const struct aurelion_boot_info *boot_info)
 {
     struct aurelion_console console;
+    struct aurelion_framebuffer_surface framebuffer;
+    void *framebuffer_mapping = 0;
+    int framebuffer_available = 0;
     aurelion_console_init(&console, VGA_TEXT_BUFFER);
 
     /* Initialize serial port for CI-visible diagnostics */
@@ -69,6 +73,11 @@ void aurelion_kernel_main(const struct aurelion_boot_info *boot_info)
 
     if (aurelion_validate_boot_info(boot_info)) {
         print_serial(&console, "Boot ABI validated.\n");
+        framebuffer_available = aurelion_framebuffer_init(
+            &framebuffer, &boot_info->framebuffer);
+        if (framebuffer_available) {
+            aurelion_serial_write("Prism framebuffer: available.\n");
+        }
     } else {
         print_serial(&console, "ERROR: Boot ABI validation failed.\n");
     }
@@ -112,8 +121,19 @@ void aurelion_kernel_main(const struct aurelion_boot_info *boot_info)
 
     /* Initialize virtual memory manager */
     print_serial(&console, "VMM: initializing...\n");
-    aurelion_vmm_init();
+    framebuffer_mapping = aurelion_vmm_init(
+        framebuffer_available ? &boot_info->framebuffer : 0);
     print_serial(&console, "VMM: done.\n");
+
+    if (framebuffer_available) {
+        if (framebuffer_mapping) {
+            aurelion_framebuffer_rebase(&framebuffer, framebuffer_mapping);
+            aurelion_framebuffer_draw_boot_splash(&framebuffer, 4);
+            aurelion_serial_write("Prism framebuffer: boot canvas rendered.\n");
+        } else {
+            aurelion_serial_write("Prism framebuffer: mapping failed.\n");
+        }
+    }
 
     /* Initialize kernel heap (use 4 MiB starting at 4 MiB physical, identity mapped) */
     print_serial(&console, "HEAP: initializing...\n");

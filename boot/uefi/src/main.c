@@ -118,6 +118,54 @@ static void print_hex(uint64_t val)
 
 static void print_str2(const char *s, int len);
 
+static uint32_t mask_shift(uint32_t mask)
+{
+    uint32_t shift = 0;
+    while (mask != 0 && (mask & 1U) == 0) {
+        mask >>= 1;
+        shift++;
+    }
+    return shift;
+}
+
+static uint32_t mask_size(uint32_t mask)
+{
+    uint32_t size = 0;
+    while (mask != 0) {
+        size += mask & 1U;
+        mask >>= 1;
+    }
+    return size;
+}
+
+static void set_framebuffer_format(
+    struct aurelion_framebuffer *framebuffer,
+    const EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *mode)
+{
+    if (mode->PixelFormat == PixelRedGreenBlueReserved8BitPerColor) {
+        framebuffer->red_mask_size = 8;
+        framebuffer->red_mask_shift = 0;
+        framebuffer->green_mask_size = 8;
+        framebuffer->green_mask_shift = 8;
+        framebuffer->blue_mask_size = 8;
+        framebuffer->blue_mask_shift = 16;
+    } else if (mode->PixelFormat == PixelBlueGreenRedReserved8BitPerColor) {
+        framebuffer->red_mask_size = 8;
+        framebuffer->red_mask_shift = 16;
+        framebuffer->green_mask_size = 8;
+        framebuffer->green_mask_shift = 8;
+        framebuffer->blue_mask_size = 8;
+        framebuffer->blue_mask_shift = 0;
+    } else if (mode->PixelFormat == PixelBitMask) {
+        framebuffer->red_mask_size = mask_size(mode->PixelInformation.RedMask);
+        framebuffer->red_mask_shift = mask_shift(mode->PixelInformation.RedMask);
+        framebuffer->green_mask_size = mask_size(mode->PixelInformation.GreenMask);
+        framebuffer->green_mask_shift = mask_shift(mode->PixelInformation.GreenMask);
+        framebuffer->blue_mask_size = mask_size(mode->PixelInformation.BlueMask);
+        framebuffer->blue_mask_shift = mask_shift(mode->PixelInformation.BlueMask);
+    }
+}
+
 static void print_u64(uint64_t val)
 {
     char buf[21];
@@ -293,6 +341,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
         fb.height = mode->Info->VerticalResolution;
         fb.pitch = mode->Info->PixelsPerScanLine * 4;
         fb.bpp = 32;
+        set_framebuffer_format(&fb, mode->Info);
 
         print_str("GOP framebuffer: ");
         print_u64(fb.width);

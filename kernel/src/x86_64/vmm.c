@@ -10,7 +10,9 @@
 #define PTE_PRESENT     (1ULL << 0)
 #define PTE_WRITABLE    (1ULL << 1)
 #define PTE_USER        (1ULL << 2)
+#define PTE_LARGE       (1ULL << 7)
 #define PTE_NO_EXECUTE  (1ULL << 63)
+#define EARLY_IDENTITY_LARGE_PAGES 8
 
 static uint64_t pml4[512] __attribute__((aligned(4096)));
 static uint64_t pdpt[512] __attribute__((aligned(4096)));
@@ -35,8 +37,9 @@ static inline uint64_t *vmm_get_next_level(uint64_t *current, uint64_t index, in
     return NULL;
 }
 
-void aurelion_vmm_init(void)
+void *aurelion_vmm_init(const struct aurelion_framebuffer *framebuffer)
 {
+    void *framebuffer_mapping = NULL;
     /* Zero all page tables */
     for (int i = 0; i < 512; i++) {
         pml4[i] = 0;
@@ -47,8 +50,9 @@ void aurelion_vmm_init(void)
     }
 
     /*
-     * Map the first 2 MiB (identity map) for boot transition.
-     * PML4[0] -> PDPT[0] -> PD[0] -> PT_low (4 KiB pages for first 2 MiB)
+     * Keep the first 16 MiB identity mapped while early services still use
+     * physical addresses. The first 2 MiB use 4 KiB pages; the remainder uses
+     * large pages for the PMM bitmap and bootstrap heap at 3 MiB and 4 MiB.
      */
     pml4[0] = (uint64_t)(uintptr_t)&pdpt[0] | PTE_PRESENT | PTE_WRITABLE;
     pdpt[0] = (uint64_t)(uintptr_t)&pd[0] | PTE_PRESENT | PTE_WRITABLE;
@@ -56,6 +60,10 @@ void aurelion_vmm_init(void)
 
     for (int i = 0; i < 512; i++) {
         pt_low[i] = (uint64_t)(i * 4096) | PTE_PRESENT | PTE_WRITABLE;
+    }
+    for (int i = 1; i < EARLY_IDENTITY_LARGE_PAGES; i++) {
+        pd[i] = (uint64_t)(i * 2 * 1024 * 1024) |
+                PTE_PRESENT | PTE_WRITABLE | PTE_LARGE;
     }
 
     /*
@@ -66,10 +74,20 @@ void aurelion_vmm_init(void)
     /* Use a separate PDPT for higher half to avoid aliasing */
     pml4[510] = (uint64_t)(uintptr_t)&pdpt[0] | PTE_PRESENT | PTE_WRITABLE;
 
+    /*
+     * Map the display before installing this page table. The PMM bitmap and
+     * loader-owned memory are still reachable through the loader mapping while
+     * map_page allocates the intermediate page tables.
+     */
+    if (framebuffer != NULL) {
+        framebuffer_mapping = aurelion_vmm_map_framebuffer(framebuffer);
+    }
+
     /* Load CR3 */
     aurelion_vmm_load_cr3();
 
     aurelion_serial_write("VMM: 4-level paging initialized (identity + higher-half).\n");
+    return framebuffer_mapping;
 }
 
 void aurelion_vmm_map_page(uint64_t virt, uint64_t phys, uint64_t flags)
@@ -133,4 +151,35 @@ void aurelion_vmm_load_cr3(void)
         : : "r"((uint64_t)(uintptr_t)&pml4)
         : "memory"
     );
+}
+
+void *aurelion_vmm_map_framebuffer(
+    const struct aurelion_framebuffer *framebuffer)
+{
+    const uint64_t page_mask = ~(uint64_t)(VMM_PAGE_SIZE - 1U);
+    uint64_t physical_base;
+    uint64_t physical_offset;
+    uint64_t byte_count;
+    uint64_t mapped_bytes;
+
+    if (framebuffer == NULL || framebuffer->address == 0 ||
+        framebuffer->width == 0 || framebuffer->height == 0 ||
+        framebuffer->pitch == 0 || framebuffer->bpp == 0) {
+        return NULL;
+    }
+
+    byte_count = (uint64_t)framebuffer->pitch * framebuffer->height;
+    physical_base = framebuffer->address & page_mask;
+    physical_offset = framebuffer->address - physical_base;
+    if (byte_count > UINT64_MAX - physical_offset) {
+        return NULL;
+    }
+    mapped_bytes = physical_offset + byte_count;
+
+    for (uint64_t offset = 0; offset < mapped_bytes; offset += VMM_PAGE_SIZE) {
+        aurelion_vmm_map_page(VMM_FRAMEBUFFER_BASE + offset,
+                              physical_base + offset, VMM_PAGE_WRITABLE);
+    }
+
+    return (void *)(uintptr_t)(VMM_FRAMEBUFFER_BASE + physical_offset);
 }

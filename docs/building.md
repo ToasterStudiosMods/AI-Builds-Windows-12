@@ -9,6 +9,9 @@ This repository contains the Aurelion kernel and a multiboot stage-1 bootloader 
 - x86-64 entry point in `kernel/src/x86_64/start.S`.
 - Kernel main routine in `kernel/src/kernel.c` that initializes all subsystems.
 - VGA text console in `kernel/src/console.c`.
+- GOP framebuffer renderer in `kernel/src/framebuffer.c`. On a UEFI boot with
+  a 24- or 32-bit RGB framebuffer, it displays the original Prism boot canvas
+  after the virtual memory manager maps the display surface.
 - Serial port (COM1) output in `kernel/src/x86_64/serial.c`.
 - GDT (Global Descriptor Table) in `kernel/src/x86_64/gdt.c`.
 - IDT (Interrupt Descriptor Table) with 32 exception handlers in `kernel/src/x86_64/idt.c`.
@@ -119,8 +122,9 @@ QEMU / BIOS
     |-- gdt_init() - Global Descriptor Table
     |-- idt_init() - Interrupt Descriptor Table (interrupts enabled)
     |-- pmm_init() - Physical memory manager (from memory map)
-    |-- vmm_init() - Virtual memory manager (4-level paging)
+    |-- vmm_init() - Virtual memory manager (4-level paging + early 16 MiB map)
     |-- heap_init() - Kernel heap allocator
+    |-- framebuffer map + Prism boot canvas (when supplied by UEFI GOP)
     |-- Boot complete, halt
 ```
 

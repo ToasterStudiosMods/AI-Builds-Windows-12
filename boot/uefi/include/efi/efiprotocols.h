@@ -128,6 +128,13 @@ typedef struct {
 typedef struct _EFI_GRAPHICS_OUTPUT_PROTOCOL EFI_GRAPHICS_OUTPUT_PROTOCOL;
 
 typedef struct {
+    UINT32 RedMask;
+    UINT32 GreenMask;
+    UINT32 BlueMask;
+    UINT32 ReservedMask;
+} EFI_PIXEL_BITMASK;
+
+typedef struct {
     UINT32  MaxMode;
     UINT32  Mode;
     EFI_PHYSICAL_ADDRESS FrameBufferBase;
@@ -135,7 +142,7 @@ typedef struct {
     UINT32  HorizontalResolution;
     UINT32  VerticalResolution;
     EFI_GRAPHICS_PIXEL_FORMAT PixelFormat;
-    UINT32  PixelInformation;
+    EFI_PIXEL_BITMASK PixelInformation;
     UINT32  PixelsPerScanLine;
 } EFI_GRAPHICS_OUTPUT_MODE_INFORMATION;
 
