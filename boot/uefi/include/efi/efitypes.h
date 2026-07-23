@@ -167,9 +167,36 @@ typedef struct _EFI_DEVICE_PATH_PROTOCOL EFI_DEVICE_PATH_PROTOCOL;
 /* Simple text output protocol */
 typedef struct _EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
 
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_RESET)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
+    BOOLEAN ExtendedVerification);
+
 typedef EFI_STATUS (EFIAPI *EFI_TEXT_STRING)(
     EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
     CHAR16 *String);
+
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_QUERY_MODE)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
+    UINTN ModeNumber, UINTN *Columns, UINTN *Rows);
+
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_SET_MODE)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
+    UINTN ModeNumber);
+
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_SET_ATTRIBUTE)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
+    UINTN Attribute);
+
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_CLEAR_SCREEN)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This);
+
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_SET_CURSOR_POSITION)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
+    UINTN Column, UINTN Row);
+
+typedef EFI_STATUS (EFIAPI *EFI_TEXT_ENABLE_CURSOR)(
+    EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *This,
+    BOOLEAN Visible);
 
 typedef struct {
     INT32 MaxMode;
@@ -181,15 +208,15 @@ typedef struct {
 } EFI_SIMPLE_TEXT_OUTPUT_MODE;
 
 struct _EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL {
-    EFI_TEXT_STRING        Reset;
-    EFI_TEXT_STRING        OutputString;
-    EFI_TEXT_STRING        TestString;
-    EFI_TEXT_STRING        QueryMode;
-    EFI_TEXT_STRING        SetMode;
-    EFI_TEXT_STRING        SetAttribute;
-    EFI_TEXT_STRING        ClearScreen;
-    EFI_TEXT_STRING        SetCursorPosition;
-    EFI_TEXT_STRING        EnableCursor;
+    EFI_TEXT_RESET               Reset;
+    EFI_TEXT_STRING              OutputString;
+    EFI_TEXT_STRING              TestString;
+    EFI_TEXT_QUERY_MODE          QueryMode;
+    EFI_TEXT_SET_MODE            SetMode;
+    EFI_TEXT_SET_ATTRIBUTE       SetAttribute;
+    EFI_TEXT_CLEAR_SCREEN        ClearScreen;
+    EFI_TEXT_SET_CURSOR_POSITION SetCursorPosition;
+    EFI_TEXT_ENABLE_CURSOR       EnableCursor;
     EFI_SIMPLE_TEXT_OUTPUT_MODE *Mode;
 };
 

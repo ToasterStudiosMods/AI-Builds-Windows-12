@@ -340,7 +340,9 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
 
     /* ---- Validate ELF header ---- */
     Elf64_Ehdr *ehdr = (Elf64_Ehdr *)elf_data;
-    if (memcmp(ehdr->e_ident, "\x7fELF", 4) != 0) {
+    /* Adjacent-literal split avoids "\x7fE" being parsed as one hex escape
+     * (E is a valid hex digit, so "\x7fELF" alone corrupts the magic). */
+    if (memcmp(ehdr->e_ident, "\x7f" "ELF", 4) != 0) {
         print_str("ERROR: Not a valid ELF file.\n");
         return EFI_LOAD_ERROR;
     }
