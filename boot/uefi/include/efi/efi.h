@@ -59,23 +59,23 @@ typedef struct {
     EFI_STATUS (EFIAPI *CloseEvent)(void *Event);
     EFI_STATUS (EFIAPI *CheckEvent)(void *Event);
     EFI_STATUS (EFIAPI *InstallProtocolInterface)(EFI_HANDLE *Handle, EFI_GUID *Protocol,
-                                                   EFI_NATIVE_INTERFACE Interface);
+                                                   UINT32 InterfaceType, void *Interface);
     EFI_STATUS (EFIAPI *ReinstallProtocolInterface)(EFI_HANDLE Handle, EFI_GUID *Protocol,
-                                                      EFI_NATIVE_INTERFACE OldInterface,
-                                                      EFI_NATIVE_INTERFACE NewInterface);
+                                                      void *OldInterface,
+                                                      void *NewInterface);
     EFI_STATUS (EFIAPI *UninstallProtocolInterface)(EFI_HANDLE Handle, EFI_GUID *Protocol,
-                                                      EFI_NATIVE_INTERFACE Interface);
-    EFI_HANDLE (EFIAPI *HandleProtocol)(EFI_HANDLE Handle, EFI_GUID *Protocol, void **Interface);
+                                                      void *Interface);
+    EFI_STATUS (EFIAPI *HandleProtocol)(EFI_HANDLE Handle, EFI_GUID *Protocol, void **Interface);
     void *RegisterProtocolNotify;
     EFI_STATUS (EFIAPI *LocateHandle)(EFI_LOCATE_SEARCH_TYPE SearchType,
-                                        EFI_GUID *Protocol, VOID *SearchKey,
+                                        EFI_GUID *Protocol, void *SearchKey,
                                         UINTN *BufferSize, EFI_HANDLE *Buffer);
     EFI_STATUS (EFIAPI *LocateDevicePath)(EFI_GUID *Protocol,
                                            EFI_DEVICE_PATH_PROTOCOL **DevicePath,
                                            EFI_HANDLE *Device);
     EFI_STATUS (EFIAPI *InstallConfigurationTable)(EFI_GUID *Guid, void *Table);
     EFI_STATUS (EFIAPI *LoadImage)(BOOLEAN BootPolicy, EFI_HANDLE ParentImageHandle,
-                                   EFI_DEVICE_PATH_PROTOCOL *FilePath, VOID *SourceBuffer,
+                                   EFI_DEVICE_PATH_PROTOCOL *FilePath, void *SourceBuffer,
                                    UINTN SourceSize, EFI_HANDLE *ImageHandle);
     EFI_STATUS (EFIAPI *StartImage)(EFI_HANDLE ImageHandle, UINTN *ExitDataSize,
                                      CHAR16 **ExitData);
@@ -99,27 +99,19 @@ typedef struct {
     EFI_STATUS (EFIAPI *ProtocolsPerHandle)(EFI_HANDLE Handle, EFI_GUID ***ProtocolBuffer,
                                              UINTN *ProtocolBufferCount);
     EFI_STATUS (EFIAPI *LocateHandleBuffer)(EFI_LOCATE_SEARCH_TYPE SearchType,
-                                            EFI_GUID *Protocol, VOID *SearchKey,
+                                            EFI_GUID *Protocol, void *SearchKey,
                                             UINTN *NoHandles, EFI_HANDLE **Buffer);
     EFI_STATUS (EFIAPI *LocateProtocol)(EFI_GUID *Protocol, void *Registration, void **Interface);
     EFI_STATUS (EFIAPI *InstallMultipleProtocolInterfaces)(EFI_HANDLE *Handle, ...);
     EFI_STATUS (EFIAPI *UninstallMultipleProtocolInterfaces)(EFI_HANDLE Handle, ...);
-    EFI_STATUS (EFIAPI *CalculateCrc32)(VOID *Data, UINTN DataSize, UINT32 *Crc32);
+    EFI_STATUS (EFIAPI *CalculateCrc32)(void *Data, UINTN DataSize, UINT32 *Crc32);
     void *CopyMem;
     void *SetMem;
     void *CreateEventEx;
 } EFI_BOOT_SERVICES;
 
-typedef UINTN EFI_TPL;
-typedef UINTN EFI_NATIVE_INTERFACE;
-typedef enum {
-    EfiTimerCancel,
-    EfiTimerPeriodic,
-    EfiTimerRelative,
-} EFI_TIMER_DELAY;
-
-/* EFI System Table */
-typedef struct {
+/* EFI System Table (tag matches the forward declaration in efitypes.h) */
+struct EFI_SYSTEM_TABLE {
     EFI_TABLE_HEADER          Hdr;
     CHAR16                    *FirmwareVendor;
     UINT32                    FirmwareRevision;
@@ -133,6 +125,6 @@ typedef struct {
     EFI_BOOT_SERVICES         *BootServices;
     UINTN                     NumberOfTableEntries;
     void                      *ConfigurationTable;
-} EFI_SYSTEM_TABLE;
+};
 
 #endif

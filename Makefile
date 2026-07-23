@@ -86,13 +86,15 @@ uefi:
 	@echo "Install gnu-efi or mingw-w64 to build BOOTX64.EFI."
 endif
 
+UEFI_OBJECTS := $(BUILD_DIR)/uefi/main.o $(BUILD_DIR)/uefi/string.o
+
 $(BUILD_DIR)/uefi/%.o: $(BOOT_DIR)/src/%.c
 	@mkdir -p $(dir $@)
 	x86_64-w64-mingw32-gcc -std=c11 -ffreestanding -fno-stack-protector \
 	    -Iboot/uefi/include -Ikernel/include -c $< -o $@
 
-$(BOOT_EFI): $(BUILD_DIR)/uefi/main.o
-	x86_64-w64-mingw32-ld -nostdlib -e efi_main -o $@ $< --subsystem 10
+$(BOOT_EFI): $(UEFI_OBJECTS)
+	x86_64-w64-mingw32-ld -nostdlib -e efi_main -o $@ $(UEFI_OBJECTS) --subsystem 10
 
 # ===== ESP Image =====
 

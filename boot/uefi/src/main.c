@@ -47,6 +47,11 @@ static EFI_GUID gEfiAcpi10TableGuid = {
     { 0x9A, 0x16, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D }
 };
 
+static EFI_GUID gEfiFileInfoGuid = {
+    0x0954E92A, 0x6228, 0x11D2,
+    { 0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B }
+};
+
 /* ELF64 structures */
 #define EI_NIDENT 16
 
@@ -110,6 +115,8 @@ static void print_hex(uint64_t val)
     print_str("0x");
     print_str(buf + start);
 }
+
+static void print_str2(const char *s, int len);
 
 static void print_u64(uint64_t val)
 {
@@ -245,12 +252,6 @@ static void convert_memory_map(void *uefi_map, UINTN map_size, UINTN desc_size)
         ptr += desc_size;
     }
 }
-
-/* EFI File Info GUID */
-static EFI_GUID gEfiFileInfoGuid = {
-    0x0954E92A, 0x6228, 0x11D2,
-    { 0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B }
-};
 
 /* Entry point */
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
