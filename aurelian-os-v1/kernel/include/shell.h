@@ -8,8 +8,8 @@
 
 #include <stdint.h>
 
-/* Run the desktop shell. Never returns. `wp_*` describe the wallpaper module
- * (have_wp==0 -> gradient background). */
-void shell_run(int have_wp, uint64_t wp_addr, uint32_t wp_size);
+/* Run the desktop shell. Never returns. `n` wallpaper modules are described by
+ * the parallel wp_addr/wp_size arrays (n==0 -> gradient background). */
+void shell_run(int n, const uint64_t *wp_addr, const uint32_t *wp_size);
 
 #endif /* AURELIAN_SHELL_H */

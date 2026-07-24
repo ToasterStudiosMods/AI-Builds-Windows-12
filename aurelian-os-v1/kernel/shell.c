@@ -59,10 +59,11 @@ static const uint32_t C_SHADOW = 0x000C0A1Au;
 #define TASKH  46          /* taskbar height             */
 static int SW, SH;         /* screen dimensions          */
 
-/* wallpaper source */
-static int      wp_ok;
-static const uint8_t *wp_px;
-static uint32_t wp_w, wp_h;
+/* wallpapers */
+#define MAX_WP 12
+static const uint8_t *wp_px[MAX_WP];
+static uint32_t wp_w[MAX_WP], wp_h[MAX_WP];
+static int wp_count, wp_active;
 
 /* interaction state */
 static int cx, cy;                 /* cursor                     */
@@ -164,11 +165,12 @@ static void draw_content(int a)
     switch (a) {
     case APP_WELCOME:
         fb_print(x, y, "Aurelian OS", TH_accent, 3);
-        fb_print(x, y + 34, "codename \"Luma\"  -  Aurelion v1.0.0-dev", sub, 2);
-        fb_print(x, y + 70, "The Luma Shell is running.", fg, 2);
-        fb_print(x, y + 96, "Open the Start menu (bottom-left)", fg, 2);
-        fb_print(x, y + 118, "to launch apps. Drag windows by", fg, 2);
-        fb_print(x, y + 140, "their title bar; the x closes them.", fg, 2);
+        fb_print(x, y + 34, "codename \"Luma\"", sub, 2);
+        fb_print(x, y + 56, "Aurelion kernel v1.0.0-dev", sub, 2);
+        fb_print(x, y + 90, "The Luma Shell is running.", fg, 2);
+        fb_print(x, y + 114, "Open Start (bottom-left) to", fg, 2);
+        fb_print(x, y + 136, "launch apps. Drag a window", fg, 2);
+        fb_print(x, y + 158, "by its title bar; x closes it.", fg, 2);
         break;
     case APP_NOTEPAD: {
         fb_fill_rect(x, y, w, h, TH_dark ? 0x00121218u : C_WHITE);
@@ -236,6 +238,23 @@ static void draw_content(int a)
         fb_rounded_rect(x, y + 110, 150, 34, 8, TH_dark ? TH_accent : 0x00E4E4EE);
         fb_print(x + 14, y + 119, TH_dark ? "Dark  (on)" : "Dark  (off)",
                  TH_dark ? C_WHITE : co_fg(), 2);
+        if (wp_count > 0) {
+            fb_print(x, y + 160, "Wallpaper", sub, 2);
+            for (int k = 0; k < wp_count; k++) {
+                int col = k % 4, row = k / 4;
+                int tx = x + col * 80, tyy = y + 186 + row * 66;
+                for (int py = 0; py < 54; py++)
+                    for (int px = 0; px < 72; px++) {
+                        uint32_t sxp = (uint32_t)px * wp_w[k] / 72;
+                        uint32_t syp = (uint32_t)py * wp_h[k] / 54;
+                        const uint8_t *pp = wp_px[k] + ((uint64_t)syp * wp_w[k] + sxp) * 4;
+                        fb_put_pixel((uint32_t)(tx + px), (uint32_t)(tyy + py),
+                                     (uint32_t)pp[0] | ((uint32_t)pp[1] << 8) | ((uint32_t)pp[2] << 16));
+                    }
+                if (k == wp_active) fb_rect_border(tx - 2, tyy - 2, 76, 58, 2, TH_accent);
+                else                fb_rect_border(tx, tyy, 72, 54, 1, co_sub());
+            }
+        }
         break;
     }
     case APP_PAINT: {
@@ -335,6 +354,10 @@ static void app_click(int a, int lx, int ly, int w, int h)
         for (int i = 0; i < 6; i++)
             if (in_r(lx, ly, i * 44, 26, 34, 34)) { TH_accent = sw[i]; return; }
         if (in_r(lx, ly, 0, 110, 150, 34)) { TH_dark = !TH_dark; return; }
+        for (int k = 0; k < wp_count; k++) {
+            int col = k % 4, row = k / 4;
+            if (in_r(lx, ly, col * 80, 186 + row * 66, 72, 54)) { wp_active = k; return; }
+        }
     } else if (a == APP_PAINT) {
         static const uint32_t pal[6] = {
             0x00EF4444u, 0x00F59E0Bu, 0x0022C55Eu, 0x003B82F6u, 0x00A855F7u, 0x00111111u
@@ -463,8 +486,8 @@ static int start_menu_hit(int px, int py)
 /* ------------------------------------------------------------------ */
 static void draw_background(void)
 {
-    if (wp_ok)
-        fb_blit_raw32(wp_px, wp_w, wp_h);
+    if (wp_count > 0)
+        fb_blit_raw32(wp_px[wp_active], wp_w[wp_active], wp_h[wp_active]);
     else
         fb_vgradient(0, 0, SW, SH, 0x00141230u, 0x004A2A82u);
 }
@@ -531,17 +554,19 @@ static void on_press(void)
     start_open = 0;
 }
 
-void shell_run(int have_wp, uint64_t wp_addr, uint32_t wp_size)
+void shell_run(int n, const uint64_t *wp_addr, const uint32_t *wp_size)
 {
     SW = fb_width(); SH = fb_height();
 
-    /* validate wallpaper module */
-    wp_ok = 0;
-    if (have_wp && wp_size > 12) {
-        const uint8_t *p = (const uint8_t *)(uintptr_t)wp_addr;
-        if (p[0]=='A'&&p[1]=='O'&&p[2]=='W'&&p[3]=='P') {
+    /* validate each wallpaper module (AOWP header) */
+    wp_count = 0; wp_active = 0;
+    for (int i = 0; i < n && wp_count < MAX_WP; i++) {
+        const uint8_t *p = (const uint8_t *)(uintptr_t)wp_addr[i];
+        if (wp_size[i] > 12 && p[0]=='A'&&p[1]=='O'&&p[2]=='W'&&p[3]=='P') {
             uint32_t ww = *(const uint32_t *)(p + 4), wh = *(const uint32_t *)(p + 8);
-            if ((uint64_t)ww * wh * 4 + 12 <= wp_size) { wp_ok = 1; wp_px = p + 12; wp_w = ww; wp_h = wh; }
+            if ((uint64_t)ww * wh * 4 + 12 <= wp_size[i]) {
+                wp_px[wp_count] = p + 12; wp_w[wp_count] = ww; wp_h[wp_count] = wh; wp_count++;
+            }
         }
     }
 
@@ -550,7 +575,7 @@ void shell_run(int have_wp, uint64_t wp_addr, uint32_t wp_size)
     wins[APP_NOTEPAD]  = (struct win){ 0,0,460,340,0 };
     wins[APP_CALC]     = (struct win){ 0,0,250,320,0 };
     wins[APP_CLOCK]    = (struct win){ 0,0,360,200,0 };
-    wins[APP_SETTINGS] = (struct win){ 0,0,340,300,0 };
+    wins[APP_SETTINGS] = (struct win){ 0,0,400,430,0 };
     wins[APP_PAINT]    = (struct win){ 0,0,CANVAS_W+2*PAD, CANVAS_H+2*PAD+TB+52, 0 };
     wins[APP_TERM]     = (struct win){ 0,0,400,280,0 };
 

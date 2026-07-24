@@ -77,25 +77,23 @@ void kprintf(const char *fmt, ...)
 /* ------------------------------------------------------------------ */
 /* Multiboot2 parse                                                   */
 /* ------------------------------------------------------------------ */
+#define MAX_WP 12
 struct boot_facts {
     const char *loader;
     uint32_t    mem_upper_kib;
     int         have_fb;
     struct fb_info fb;
-    int         have_wp;
-    uint64_t    wp_addr;
-    uint32_t    wp_size;
+    int         nwp;
+    uint64_t    wp_addr[MAX_WP];
+    uint32_t    wp_size[MAX_WP];
 };
-
-static int bf_str_eq(const char *a, const char *b)
-{ while (*a && *a == *b) { a++; b++; } return *a == *b; }
 
 static void parse_mbi2(uint64_t mbi2_info, struct boot_facts *out)
 {
     out->loader = "unknown";
     out->mem_upper_kib = 0;
     out->have_fb = 0;
-    out->have_wp = 0;
+    out->nwp = 0;
 
     const uint8_t *ptr = (const uint8_t *)(uintptr_t)mbi2_info;
     uint32_t total = *(const uint32_t *)ptr;
@@ -120,12 +118,12 @@ static void parse_mbi2(uint64_t mbi2_info, struct boot_facts *out)
             out->have_fb   = 1;
             break;
         }
-        case 3: {
+        case 3: {   /* boot modules named wp0, wp1, ... are wallpapers */
             const struct mbi2_module *m = (const struct mbi2_module *)tag;
-            if (!out->have_wp || bf_str_eq(m->string, "wallpaper")) {
-                out->wp_addr = m->mod_start;
-                out->wp_size = m->mod_end - m->mod_start;
-                out->have_wp = 1;
+            if (m->string[0] == 'w' && m->string[1] == 'p' && out->nwp < MAX_WP) {
+                out->wp_addr[out->nwp] = m->mod_start;
+                out->wp_size[out->nwp] = m->mod_end - m->mod_start;
+                out->nwp++;
             }
             break;
         }
@@ -187,8 +185,9 @@ void kmain(uint64_t mbi2_info)
         keyboard_init();
         mouse_init();
         interrupts_enable();
-        serial_write("[drv] drivers up; starting Luma Shell.\n");
-        shell_run(bf.have_wp, bf.wp_addr, bf.wp_size);   /* never returns */
+        serial_write("[drv] drivers up; starting Luma Shell (");
+        serial_write_u64((uint64_t)bf.nwp); serial_write(" wallpapers).\n");
+        shell_run(bf.nwp, bf.wp_addr, bf.wp_size);       /* never returns */
     } else {
         serial_write("[fb] no usable framebuffer; VGA text.\n");
         text_fallback(&bf);
