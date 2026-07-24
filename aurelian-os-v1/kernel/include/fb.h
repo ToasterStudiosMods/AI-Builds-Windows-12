@@ -29,7 +29,8 @@ static inline uint32_t rgb(uint8_t r, uint8_t g, uint8_t b)
 int  fb_init(const struct fb_info *info);   /* returns 1 if usable RGB fb */
 int  fb_ready(void);
 
-void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color);
+void     fb_put_pixel(uint32_t x, uint32_t y, uint32_t color);
+uint32_t fb_get_pixel(uint32_t x, uint32_t y);
 void fb_fill_rect(int x, int y, int w, int h, uint32_t color);
 void fb_rounded_rect(int x, int y, int w, int h, int radius, uint32_t color);
 void fb_rect_border(int x, int y, int w, int h, int thick, uint32_t color);

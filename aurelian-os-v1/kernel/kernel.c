@@ -15,6 +15,10 @@
 #include "fb.h"
 #include "serial.h"
 #include "interrupts.h"
+#include "input.h"
+#include "timer.h"
+#include "keyboard.h"
+#include "mouse.h"
 #include <stdarg.h>
 
 /* ------------------------------------------------------------------ */
@@ -145,9 +149,22 @@ static int draw_str(int x, int y, const char *s, uint32_t color, int scale)
     return x + fb_text_width(s, scale);
 }
 
+/* Desktop layout recorded by draw_desktop() so the interactive loop can
+ * hit-test buttons and repaint regions without recomposing the whole scene. */
+static int g_W, g_H;
+static int g_btn_x[2], g_btn_y[2], g_btn_w[2], g_btn_h[2];   /* 0=Start 1=About */
+static int g_status_x, g_status_y, g_status_w;                /* feedback line   */
+static int g_clock_x, g_clock_y, g_clock_w;                   /* top-bar clock   */
+static const char *g_btn_label[2] = { "Get Started", "About" };
+static const uint32_t g_btn_base[2] = { C_ACCENT1, C_BTN_OUT };
+static const uint32_t g_btn_hover[2] = { 0x007A7DF5u, 0x00F0F0F6u };
+static const uint32_t g_btn_press[2] = { 0x004B4ECCu, 0x00CACAD6u };
+static const uint32_t g_btn_fg[2] = { C_WHITE, C_CARD_FG };
+
 static void draw_desktop(const struct boot_facts *bf)
 {
     int W = (int)bf->fb.width, H = (int)bf->fb.height;
+    g_W = W; g_H = H;
 
     /* wallpaper */
     fb_vgradient(0, 0, W, H, C_WALL_TOP, C_WALL_BOT);
@@ -158,9 +175,10 @@ static void draw_desktop(const struct boot_facts *bf)
     fb_rounded_rect(10, 7, 16, 16, 4, C_ACCENT2);      /* logo chip */
     draw_str(34, 8, "Aurelian OS", C_BAR_FG, 2);
     /* right side: Prism UI + clock */
-    const char *clk = "12:00";
-    int clk_w = fb_text_width(clk, 2);
-    draw_str(W - clk_w - 14, 8, clk, C_BAR_FG, 2);
+    const char *clk = "0:00";
+    int clk_w = fb_text_width("00:00", 2);
+    g_clock_x = W - clk_w - 14; g_clock_y = 8; g_clock_w = clk_w + 4;
+    draw_str(g_clock_x, 8, clk, C_BAR_FG, 2);
     const char *pui = "Prism UI";
     draw_str(W - clk_w - 14 - fb_text_width(pui, 2) - 24, 8, pui, C_CARD_SUB, 2);
 
@@ -199,14 +217,18 @@ static void draw_desktop(const struct boot_facts *bf)
         draw_str(x, by, " bpp", C_CARD_FG, 2);
         by += 30;
     }
-    draw_str(bx, by, "Graphical desktop online.", C_CARD_FG, 2);
+    g_status_x = bx; g_status_y = by; g_status_w = cw - 52;
+    draw_str(bx, by, "Click a button or type on the keyboard.", C_CARD_SUB, 2);
 
-    /* buttons */
+    /* buttons (rects recorded so the interactive loop can hit-test them) */
     int btn_y = cy + ch - 66;
-    fb_rounded_rect(bx, btn_y, 200, 42, 10, C_ACCENT1);
-    draw_str(bx + (200 - fb_text_width("Get Started", 2)) / 2, btn_y + 13, "Get Started", C_WHITE, 2);
-    fb_rounded_rect(bx + 216, btn_y, 130, 42, 10, C_BTN_OUT);
-    draw_str(bx + 216 + (130 - fb_text_width("About", 2)) / 2, btn_y + 13, "About", C_CARD_FG, 2);
+    g_btn_x[0] = bx;       g_btn_y[0] = btn_y; g_btn_w[0] = 200; g_btn_h[0] = 42;
+    g_btn_x[1] = bx + 216; g_btn_y[1] = btn_y; g_btn_w[1] = 130; g_btn_h[1] = 42;
+    for (int i = 0; i < 2; i++) {
+        fb_rounded_rect(g_btn_x[i], g_btn_y[i], g_btn_w[i], g_btn_h[i], 10, g_btn_base[i]);
+        draw_str(g_btn_x[i] + (g_btn_w[i] - fb_text_width(g_btn_label[i], 2)) / 2,
+                 g_btn_y[i] + 13, g_btn_label[i], g_btn_fg[i], 2);
+    }
 
     /* dock */
     int dock_w = 300, dock_h = 54;
@@ -216,9 +238,6 @@ static void draw_desktop(const struct boot_facts *bf)
     uint32_t icons[5] = { 0x00EF4444u, 0x00F59E0Bu, 0x0022C55Eu, 0x003B82F6u, 0x00A855F7u };
     for (int i = 0; i < 5; i++)
         fb_rounded_rect(dx + 20 + i * 54, dy + 9, 36, 36, 9, icons[i]);
-
-    /* cursor */
-    fb_draw_cursor(W / 2 + 30, H / 2, C_WHITE, 0x00141414u);
 
     fb_present();
 }
@@ -243,14 +262,143 @@ static void text_fallback(const struct boot_facts *bf)
 }
 
 /* ------------------------------------------------------------------ */
-/* A1 interrupt-foundation self-test (temporary scaffold, removed once  */
-/* the timer/keyboard/mouse drivers exercise the IRQ path for real).    */
+/* Interactive desktop loop (A5): cursor, buttons, typing, clock.     */
 /* ------------------------------------------------------------------ */
-static volatile int selftest_fired;
-static void selftest_irq(void)
+
+/* Software cursor via a save/restore backing store (flicker-free). */
+#define CUR_W 12
+#define CUR_H 16
+static uint32_t g_cur_bak[CUR_W * CUR_H];
+static int      g_cur_saved, g_cur_bx, g_cur_by;
+
+static void cursor_hide(void)
 {
-    selftest_fired = 1;
-    serial_write("[int] test IRQ handler ran\n");
+    if (!g_cur_saved) return;
+    for (int j = 0; j < CUR_H; j++)
+        for (int i = 0; i < CUR_W; i++)
+            fb_put_pixel((uint32_t)(g_cur_bx + i), (uint32_t)(g_cur_by + j),
+                         g_cur_bak[j * CUR_W + i]);
+    g_cur_saved = 0;
+}
+
+static void cursor_show(int cx, int cy)
+{
+    g_cur_bx = cx - 1; g_cur_by = cy - 1;
+    for (int j = 0; j < CUR_H; j++)
+        for (int i = 0; i < CUR_W; i++)
+            g_cur_bak[j * CUR_W + i] =
+                fb_get_pixel((uint32_t)(g_cur_bx + i), (uint32_t)(g_cur_by + j));
+    fb_draw_cursor(cx, cy, C_WHITE, 0x00141414u);
+    g_cur_saved = 1;
+}
+
+static int g_btn_state[2];      /* 0 normal, 1 hover, 2 pressed */
+
+static void redraw_button(int i)
+{
+    uint32_t col = g_btn_state[i] == 2 ? g_btn_press[i]
+                 : g_btn_state[i] == 1 ? g_btn_hover[i]
+                                       : g_btn_base[i];
+    fb_rounded_rect(g_btn_x[i], g_btn_y[i], g_btn_w[i], g_btn_h[i], 10, col);
+    draw_str(g_btn_x[i] + (g_btn_w[i] - fb_text_width(g_btn_label[i], 2)) / 2,
+             g_btn_y[i] + 13, g_btn_label[i], g_btn_fg[i], 2);
+}
+
+static char g_typed[48];
+static int  g_typed_len;
+
+static void set_typed(const char *s)
+{
+    int i = 0;
+    while (s[i] && i < 47) { g_typed[i] = s[i]; i++; }
+    g_typed[i] = 0; g_typed_len = i;
+}
+
+static void type_char(char c)
+{
+    if (c == '\b') { if (g_typed_len > 0) g_typed[--g_typed_len] = 0; }
+    else if (c >= ' ' && g_typed_len < 47) { g_typed[g_typed_len++] = c; g_typed[g_typed_len] = 0; }
+}
+
+static void redraw_status(void)
+{
+    fb_fill_rect(g_status_x, g_status_y, g_status_w, 18, C_CARD_BG);
+    int x = draw_str(g_status_x, g_status_y, "> ", C_ACCENT2, 2);
+    draw_str(x, g_status_y, g_typed, C_CARD_FG, 2);
+}
+
+static void redraw_clock(uint32_t sec)
+{
+    fb_fill_rect(g_clock_x, g_clock_y, g_clock_w, 16, C_BAR_BG);
+    uint32_t m = sec / 60, s = sec % 60;
+    int x = draw_uint(g_clock_x, g_clock_y, m, C_BAR_FG, 2);
+    x = draw_str(x, g_clock_y, ":", C_BAR_FG, 2);
+    if (s < 10) x = draw_str(x, g_clock_y, "0", C_BAR_FG, 2);
+    draw_uint(x, g_clock_y, s, C_BAR_FG, 2);
+}
+
+static int in_btn(int px, int py, int i)
+{
+    return px >= g_btn_x[i] && px < g_btn_x[i] + g_btn_w[i]
+        && py >= g_btn_y[i] && py < g_btn_y[i] + g_btn_h[i];
+}
+
+/* The main loop: consume input events, move the cursor, react to hover/click,
+ * echo typed keys, tick the clock. Never returns. */
+static void ui_run(void)
+{
+    int cx = g_W / 2, cy = g_H / 2;
+    uint8_t prev_btn = 0;
+    uint64_t last_sec = 0;
+    struct input_event e;
+
+    set_typed("");
+    cursor_show(cx, cy);
+    fb_present();
+    serial_write("[ui] interactive loop running (move the mouse, type, click)\n");
+
+    for (;;) {
+        int first = 1, touched = 0;
+
+        while (input_poll(&e)) {
+            if (first) { cursor_hide(); first = 0; }
+            touched = 1;
+
+            if (e.type == INPUT_MOUSE) {
+                cx += e.dx; cy -= e.dy;
+                if (cx < 0) cx = 0;
+                if (cx > g_W - 1) cx = g_W - 1;
+                if (cy < 0) cy = 0;
+                if (cy > g_H - 1) cy = g_H - 1;
+
+                uint8_t lb = e.buttons & 1u;
+                for (int i = 0; i < 2; i++) {
+                    int st = in_btn(cx, cy, i) ? (lb ? 2 : 1) : 0;
+                    if (st != g_btn_state[i]) { g_btn_state[i] = st; redraw_button(i); }
+                }
+                if ((e.buttons & 1u) && !(prev_btn & 1u)) {
+                    if (in_btn(cx, cy, 0)) { set_typed("Hello from Aurelian OS!"); redraw_status(); }
+                    else if (in_btn(cx, cy, 1)) { set_typed("Prism UI - Aurelion v1.0.0-dev"); redraw_status(); }
+                }
+                prev_btn = e.buttons;
+            } else if (e.type == INPUT_KEY_DOWN && e.ascii) {
+                type_char(e.ascii);
+                redraw_status();
+            }
+        }
+
+        uint64_t sec = timer_ticks() / 100;
+        if (sec != last_sec) {
+            if (first) { cursor_hide(); first = 0; }
+            last_sec = sec;
+            redraw_clock((uint32_t)sec);
+            touched = 1;
+        }
+
+        if (!first) cursor_show(cx, cy);
+        if (touched) fb_present();
+        __asm__ volatile ("hlt");
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -283,23 +431,20 @@ void kmain(uint64_t mbi2_info)
     if (bf.have_fb && fb_init(&bf.fb)) {
         serial_write("[fb] rendering Prism UI desktop...\n");
         draw_desktop(&bf);
-        serial_write("[ok] desktop rendered. Halting.\n");
-    } else {
-        serial_write("[fb] falling back to VGA text console\n");
-        text_fallback(&bf);
-        serial_write("[ok] text banner shown. Halting.\n");
-    }
+        serial_write("[ok] desktop rendered.\n");
 
-    /* --- Interrupt foundation (A1) + self-test --- */
-    serial_write("[int] initializing IDT + PIC...\n");
-    idt_init();
-    irq_install(5, selftest_irq);
-    interrupts_enable();
-    serial_write("[int] interrupts enabled; firing software vector 37 (IRQ5)...\n");
-    __asm__ volatile ("int $37");
-    serial_write(selftest_fired
-                 ? "[int] self-test PASS: stub -> dispatch -> handler -> iretq OK\n"
-                 : "[int] self-test FAIL\n");
+        serial_write("[drv] IDT + PIC + timer + keyboard + mouse...\n");
+        idt_init();
+        timer_init(100);
+        keyboard_init();
+        mouse_init();
+        interrupts_enable();
+        serial_write("[drv] drivers up; entering interactive loop.\n");
+        ui_run();                       /* never returns */
+    } else {
+        serial_write("[fb] no framebuffer; VGA text console.\n");
+        text_fallback(&bf);
+    }
 
     for (;;) __asm__ volatile ("hlt");
 }

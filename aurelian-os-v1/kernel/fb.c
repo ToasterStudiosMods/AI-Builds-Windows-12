@@ -35,6 +35,17 @@ void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color)
     }
 }
 
+uint32_t fb_get_pixel(uint32_t x, uint32_t y)
+{
+    if (!g_ready || x >= g_fb.width || y >= g_fb.height)
+        return 0;
+    const uint8_t *p = (const uint8_t *)(uintptr_t)g_fb.addr
+                     + (uint64_t)y * g_fb.pitch + (uint64_t)x * (g_fb.bpp / 8);
+    if (g_fb.bpp == 32)
+        return *(const volatile uint32_t *)p & 0x00FFFFFFu;
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16);
+}
+
 static void clamp_rect(int *x, int *y, int *w, int *h)
 {
     if (*x < 0) { *w += *x; *x = 0; }
