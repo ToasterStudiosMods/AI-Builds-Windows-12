@@ -31,7 +31,8 @@ CFLAGS  := -m64 -ffreestanding -fno-pie -fno-stack-protector \
 LDFLAGS := -m elf_x86_64 -T kernel/arch/x86_64/linker.ld -nostdlib -z noexecstack
 
 # ---- sources ----
-C_SRCS  := kernel/kernel.c kernel/vga.c kernel/string.c kernel/arch/x86_64/gdt.c
+C_SRCS  := kernel/kernel.c kernel/vga.c kernel/string.c kernel/fb.c \
+	   kernel/serial.c kernel/arch/x86_64/gdt.c
 ASM_SRCS := kernel/arch/x86_64/boot.S kernel/arch/x86_64/gdt_flush.S
 OBJ     := $(C_SRCS:.c=.o) $(ASM_SRCS:.S=.o)
 
