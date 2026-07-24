@@ -165,8 +165,52 @@ boot/
     linker.ld    - UEFI app linker script
 
 scripts/
-  abi_check.c   - Host-side ABI verification
-  run_qemu.sh   - QEMU launch script
+  abi_check.c        - Host-side ABI verification
+  run_qemu.sh        - QEMU launch script
+  vbox-boot-test.sh  - VirtualBox headless boot smoke test
 
 Makefile         - Build system (kernel, stage1, uefi, qemu targets)
 ```
+
+## Boot verification in VirtualBox
+
+CI builds the ISOs but never boots them, so a green build does not prove the
+kernel actually comes up. `scripts/vbox-boot-test.sh` boots an ISO in a
+throwaway headless VirtualBox VM, captures the guest serial output and the VGA
+text framebuffer, and fails if the guest triple-faults (VirtualBox "guru
+meditation"):
+
+```sh
+# The clean GRUB/Multiboot2 baseline (VGA output):
+scripts/vbox-boot-test.sh aurelian-os-v1/aurelian-os.iso
+
+# The custom-loader image, asserting a serial marker:
+scripts/vbox-boot-test.sh build/aurelian.iso Aurelion_TL --marker "Boot ABI validated"
+```
+
+It auto-detects `VBoxManage` (including the default Windows install path when
+run from Git Bash / MSYS2). A passing run of `aurelian-os.iso` reaches:
+
+```
+[boot] GDT loaded (64-bit, ring 0)
+...
+v1 baseline reached. Halting CPU.
+```
+
+### Recommended bootable path
+
+`aurelian-os-v1/aurelian-os.iso` (GRUB loads the Multiboot2 kernel directly) is
+the verified-bootable baseline.
+
+### Known issues — custom stage-1 loader (`build/aurelian.iso`)
+
+The top-level custom stage-1 → long-mode → ELF-loader chain is not yet
+boot-verified. Booting it in VirtualBox exposes several defects that require a
+coordinated loader rework:
+
+- `boot/stage1/start32.S` loads the code selector `0x08` into the data/stack
+  segment registers (`SS` must reference a writable data segment → `#GP`).
+- The `trampoline64` block overwrites the kernel-entry register before jumping,
+  so control transfers to the boot-info struct instead of the kernel.
+- `boot/stage1/linker.ld` and `kernel/linker.ld` both link at `1M`, so stage-1
+  overwrites its own running code when it copies the kernel to `1M`.
