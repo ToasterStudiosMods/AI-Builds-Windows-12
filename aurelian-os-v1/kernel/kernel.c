@@ -14,6 +14,7 @@
 #include "gdt.h"
 #include "fb.h"
 #include "serial.h"
+#include "interrupts.h"
 #include <stdarg.h>
 
 /* ------------------------------------------------------------------ */
@@ -242,6 +243,17 @@ static void text_fallback(const struct boot_facts *bf)
 }
 
 /* ------------------------------------------------------------------ */
+/* A1 interrupt-foundation self-test (temporary scaffold, removed once  */
+/* the timer/keyboard/mouse drivers exercise the IRQ path for real).    */
+/* ------------------------------------------------------------------ */
+static volatile int selftest_fired;
+static void selftest_irq(void)
+{
+    selftest_fired = 1;
+    serial_write("[int] test IRQ handler ran\n");
+}
+
+/* ------------------------------------------------------------------ */
 /* Entry point                                                        */
 /* ------------------------------------------------------------------ */
 void kmain(uint64_t mbi2_info)
@@ -277,6 +289,17 @@ void kmain(uint64_t mbi2_info)
         text_fallback(&bf);
         serial_write("[ok] text banner shown. Halting.\n");
     }
+
+    /* --- Interrupt foundation (A1) + self-test --- */
+    serial_write("[int] initializing IDT + PIC...\n");
+    idt_init();
+    irq_install(5, selftest_irq);
+    interrupts_enable();
+    serial_write("[int] interrupts enabled; firing software vector 37 (IRQ5)...\n");
+    __asm__ volatile ("int $37");
+    serial_write(selftest_fired
+                 ? "[int] self-test PASS: stub -> dispatch -> handler -> iretq OK\n"
+                 : "[int] self-test FAIL\n");
 
     for (;;) __asm__ volatile ("hlt");
 }
