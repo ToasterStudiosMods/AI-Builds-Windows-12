@@ -73,8 +73,11 @@ stack_top:
     .global _start
     .type   _start, @function
 _start:
-    /* ebx = mbi2 info pointer; save it. */
-    movl    %ebx, %edi
+    /* ebx = mbi2 info pointer (Multiboot2 entry convention). Preserve it in
+     * esi: the page-table bring-up below clobbers edi (movl $pml4,%edi /
+     * rep stosl / movl $pd,%edi), and esi is untouched through both the page
+     * setup and the long-mode transition. */
+    movl    %ebx, %esi
 
     /* Set up a 32-bit stack. */
     movl    $stack_top, %esp
@@ -171,9 +174,10 @@ long_mode_start:
     movabsq $stack_top, %rsp
     andq    $-16, %rsp
 
-    /* Pass the saved mbi2 info pointer (originally in ebx, now in edi) as
-     * the first argument (rdi) to kmain. */
-    movl    %edi, %edi            /* zero-extend edi into rdi */
+    /* Pass the preserved mbi2 info pointer (esi) as the first argument (rdi)
+     * to kmain. movl zero-extends esi into rdi; the pointer is a <4 GiB
+     * physical address. */
+    movl    %esi, %edi
     call    kmain
 
     cli

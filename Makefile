@@ -120,23 +120,26 @@ endif
 # ===== ISO =====
 
 iso: $(BUILD_DIR)/aurelian.iso
-	@echo "ISO creation requires xorriso/grub-mkrescue. Install and re-run."
 
 $(BUILD_DIR)/aurelian.iso: kernel stage1
-	@if command -v grub-mkrescue >/dev/null 2>&1; then \
-		mkdir -p $(BUILD_DIR)/iso/boot/grub; \
-		cp $(KERNEL_ELF) $(BUILD_DIR)/iso/boot/aurelion.elf; \
-		cp $(STAGE1_BIN) $(BUILD_DIR)/iso/boot/stage1.bin; \
-		echo "menuentry 'Aurelian OS' {" > $(BUILD_DIR)/iso/boot/grub/grub.cfg; \
-		echo "  multiboot /boot/stage1.bin" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg; \
-		echo "  module /boot/aurelion.elf" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg; \
-		echo "  boot" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg; \
-		echo "}" >> $(BUILD_DIR)/iso/boot/grub/grub.cfg; \
-		grub-mkrescue -o $@ $(BUILD_DIR)/iso 2>/dev/null; \
-		echo "ISO created: $@"; \
-	else \
-		echo "grub-mkrescue not found - ISO creation skipped."; \
+	@if ! command -v grub-mkrescue >/dev/null 2>&1; then \
+		echo "ERROR: grub-mkrescue not found - install xorriso + grub-pc-bin + mtools."; \
+		exit 1; \
 	fi
+	mkdir -p $(BUILD_DIR)/iso/boot/grub
+	cp $(KERNEL_ELF) $(BUILD_DIR)/iso/boot/aurelion.elf
+	cp $(STAGE1_BIN) $(BUILD_DIR)/iso/boot/stage1.bin
+	printf '%s\n' \
+		"set timeout=3" \
+		"set default=0" \
+		"menuentry 'Aurelian OS' {" \
+		"  multiboot /boot/stage1.bin" \
+		"  module /boot/aurelion.elf" \
+		"  boot" \
+		"}" > $(BUILD_DIR)/iso/boot/grub/grub.cfg
+	grub-mkrescue -o $@ $(BUILD_DIR)/iso
+	@test -s $@ || { echo "ERROR: grub-mkrescue did not produce $@"; exit 1; }
+	@echo "ISO created: $@ ($$(du -h $@ | cut -f1))"
 
 # ===== QEMU Run Targets =====
 
