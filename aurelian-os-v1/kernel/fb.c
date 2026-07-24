@@ -5,6 +5,7 @@
 
 #include "fb.h"
 #include "font8x8.h"
+#include "string.h"
 
 static struct fb_info g_fb;
 static uint8_t        g_ready = 0;
@@ -12,10 +13,31 @@ static uint8_t        g_ready = 0;
 int fb_init(const struct fb_info *info)
 {
     g_fb = *info;
-    /* Usable only for a linear RGB framebuffer at 24 or 32 bpp. */
+    /* Usable only for a linear RGB framebuffer at 24/32 bpp that lies inside
+     * the boot page tables' 4 GiB identity map — otherwise drawing to it would
+     * fault. If it doesn't fit, stay "not ready" and fall back to text rather
+     * than triple-faulting (e.g. on a non-VBoxVGA controller placing the LFB
+     * above 4 GiB). */
+    uint64_t end = info->addr + (uint64_t)info->height * info->pitch;
     g_ready = (info->type == 1 && (info->bpp == 32 || info->bpp == 24) &&
-               info->addr != 0 && info->width > 0 && info->height > 0);
+               info->addr != 0 && info->width > 0 && info->height > 0 &&
+               end <= 0x100000000ULL);
     return g_ready;
+}
+
+/* Blit a top-left-aligned raw image whose pixels are 32-bit BGRA/BGRX in
+ * memory (byte order B,G,R,X) — the same layout the 32-bpp framebuffer uses,
+ * so each row is a straight copy. Clamped to the screen. */
+void fb_blit_raw32(const void *src, uint32_t sw, uint32_t sh)
+{
+    if (!g_ready || g_fb.bpp != 32)
+        return;
+    uint32_t w = sw < g_fb.width  ? sw : g_fb.width;
+    uint32_t h = sh < g_fb.height ? sh : g_fb.height;
+    const uint8_t *s = (const uint8_t *)src;
+    uint8_t       *d = (uint8_t *)(uintptr_t)g_fb.addr;
+    for (uint32_t y = 0; y < h; y++)
+        memcpy(d + (uint64_t)y * g_fb.pitch, s + (uint64_t)y * sw * 4, (size_t)w * 4);
 }
 
 int fb_ready(void) { return g_ready; }

@@ -73,6 +73,18 @@ iso: $(KERNEL)
 	mkdir -p $(ISO_DIR)/boot/grub
 	cp $(KERNEL) $(ISO_DIR)/boot/aurelion.elf
 	cp grub/grub.cfg $(ISO_DIR)/boot/grub/grub.cfg
+	@# ---- desktop wallpaper (Multiboot2 module: AOWP header + 1024x768 BGRX) ----
+	@command -v convert >/dev/null 2>&1 || { echo "ERROR: ImageMagick 'convert' not found (needed for the wallpaper)."; exit 1; }
+	@if [ -f assets/wallpaper.png ]; then \
+		echo "  Wallpaper: assets/wallpaper.png"; \
+		convert assets/wallpaper.png -resize 1024x768^ -gravity center -extent 1024x768 -depth 8 bgra:$(ISO_DIR)/boot/wp.pixels; \
+	else \
+		echo "  Wallpaper: generated default (drop assets/wallpaper.png to override)"; \
+		convert -size 1024x768 -define gradient:angle=135 gradient:'#3a2a7a'-'#0d0a1c' -depth 8 bgra:$(ISO_DIR)/boot/wp.pixels; \
+	fi
+	printf 'AOWP\000\004\000\000\000\003\000\000' > $(ISO_DIR)/boot/wallpaper.aow
+	cat $(ISO_DIR)/boot/wp.pixels >> $(ISO_DIR)/boot/wallpaper.aow
+	rm -f $(ISO_DIR)/boot/wp.pixels
 	grub-mkrescue -o $(ISO) $(ISO_DIR) 2>/dev/null
 	rm -rf $(ISO_DIR)
 	@echo ""

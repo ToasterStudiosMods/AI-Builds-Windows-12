@@ -44,6 +44,13 @@ struct mbi2_framebuffer {
     uint16_t reserved;
 };
 
+struct mbi2_module {
+    uint32_t type; uint32_t size;       /* type = 3            */
+    uint32_t mod_start;                 /* physical addresses  */
+    uint32_t mod_end;
+    char     string[];                  /* module cmdline      */
+};
+
 /* ------------------------------------------------------------------ */
 /* VGA text console helpers (fallback path)                           */
 /* ------------------------------------------------------------------ */
@@ -76,13 +83,24 @@ struct boot_facts {
     uint32_t    mem_upper_kib;
     int         have_fb;
     struct fb_info fb;
+    int         have_wp;        /* wallpaper module present */
+    uint64_t    wp_addr;
+    uint32_t    wp_size;
 };
+
+/* Simple strncmp for the module cmdline check (no libc). */
+static int str_eq(const char *a, const char *b)
+{
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
 
 static void parse_mbi2(uint64_t mbi2_info, struct boot_facts *out)
 {
     out->loader = "unknown";
     out->mem_upper_kib = 0;
     out->have_fb = 0;
+    out->have_wp = 0;
 
     const uint8_t *ptr = (const uint8_t *)(uintptr_t)mbi2_info;
     uint32_t total = *(const uint32_t *)ptr;
@@ -105,6 +123,15 @@ static void parse_mbi2(uint64_t mbi2_info, struct boot_facts *out)
             out->fb.bpp    = f->bpp;
             out->fb.type   = f->fb_type;
             out->have_fb   = 1;
+            break;
+        }
+        case 3: {   /* boot module — the wallpaper blob */
+            const struct mbi2_module *m = (const struct mbi2_module *)tag;
+            if (!out->have_wp || str_eq(m->string, "wallpaper")) {
+                out->wp_addr = m->mod_start;
+                out->wp_size = m->mod_end - m->mod_start;
+                out->have_wp = 1;
+            }
             break;
         }
         default: break;
@@ -166,8 +193,24 @@ static void draw_desktop(const struct boot_facts *bf)
     int W = (int)bf->fb.width, H = (int)bf->fb.height;
     g_W = W; g_H = H;
 
-    /* wallpaper */
-    fb_vgradient(0, 0, W, H, C_WALL_TOP, C_WALL_BOT);
+    /* wallpaper: blit the loaded image module (AOWP header + BGRX pixels) if
+     * present and valid, otherwise fall back to the Prism gradient. */
+    int painted = 0;
+    if (bf->have_wp && bf->wp_size > 12) {
+        const uint8_t *p = (const uint8_t *)(uintptr_t)bf->wp_addr;
+        if (p[0] == 'A' && p[1] == 'O' && p[2] == 'W' && p[3] == 'P') {
+            uint32_t ww = *(const uint32_t *)(p + 4);
+            uint32_t wh = *(const uint32_t *)(p + 8);
+            if ((uint64_t)ww * wh * 4 + 12 <= bf->wp_size) {
+                fb_blit_raw32(p + 12, ww, wh);
+                painted = 1;
+            }
+        }
+    }
+    if (!painted)
+        fb_vgradient(0, 0, W, H, C_WALL_TOP, C_WALL_BOT);
+    serial_write(painted ? "[wp] wallpaper image blitted\n"
+                         : "[wp] no wallpaper module; gradient used\n");
 
     /* top bar */
     int bar_h = 30;
@@ -218,7 +261,7 @@ static void draw_desktop(const struct boot_facts *bf)
         by += 30;
     }
     g_status_x = bx; g_status_y = by; g_status_w = cw - 52;
-    draw_str(bx, by, "Click a button or type on the keyboard.", C_CARD_SUB, 2);
+    draw_str(bx, by, "Type here, or click a button.", C_CARD_SUB, 2);
 
     /* buttons (rects recorded so the interactive loop can hit-test them) */
     int btn_y = cy + ch - 66;

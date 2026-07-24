@@ -36,6 +36,9 @@ void fb_rounded_rect(int x, int y, int w, int h, int radius, uint32_t color);
 void fb_rect_border(int x, int y, int w, int h, int thick, uint32_t color);
 void fb_vgradient(int x, int y, int w, int h, uint32_t top, uint32_t bottom);
 
+/* Blit a raw 32-bit BGRX image (byte order B,G,R,X) to the top-left, clamped. */
+void fb_blit_raw32(const void *src, uint32_t sw, uint32_t sh);
+
 /* 8x8 font text, integer-scaled (scale >= 1). */
 void fb_draw_char(int x, int y, char c, uint32_t color, int scale);
 void fb_draw_text(int x, int y, const char *s, uint32_t color, int scale);
