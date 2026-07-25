@@ -791,10 +791,6 @@ static void draw_settings(int a)
             q3 = fb_num(q3, ry, e->tx_done, e->tx_done ? 0x00059669u : T.fg, S);
             q3 = fb_text(q3, ry, "  rx ", T.fg2, S);
             q3 = fb_num(q3, ry, e->rx_packets, T.fg, S);
-            if (e->tx_deferred) {
-                q3 = fb_text(q3, ry, "  defer ", T.fg2, S);
-                q3 = fb_num(q3, ry, e->tx_deferred, T.fg2, S);
-            }
             q3 = fb_text(q3, ry, "  arp tx/rx ", T.fg2, S);
             q3 = fb_num(q3, ry, nst->arp_tx, T.fg, S);
             q3 = fb_text(q3, ry, "/", T.fg2, S);
