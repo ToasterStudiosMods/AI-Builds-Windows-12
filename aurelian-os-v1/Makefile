@@ -30,6 +30,13 @@ CFLAGS  := -m64 -ffreestanding -fno-pie -fno-stack-protector \
 	   -Ikernel/include -Ikernel/arch/x86_64
 LDFLAGS := -m elf_x86_64 -T kernel/arch/x86_64/linker.ld -nostdlib -z noexecstack
 
+# Stamp the build with the commit it came from. The verification harness greps
+# the finished ISO for this string, which is the only reliable way to prove the
+# artifact under test is the code that was just written (comments and file
+# timestamps do not survive compilation).
+REV := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+CFLAGS += -DBUILD_REV=\"$(REV)\"
+
 # ---- sources ----
 C_SRCS  := kernel/kernel.c kernel/vga.c kernel/string.c kernel/fb.c \
 	   kernel/serial.c kernel/idt.c kernel/pic.c kernel/input.c \

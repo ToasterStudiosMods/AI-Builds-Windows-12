@@ -26,6 +26,10 @@
 #include "pci.h"
 #include <stdarg.h>
 
+#ifndef BUILD_REV
+#define BUILD_REV "unknown"
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Multiboot2 info structures (subset). See spec at multiboot2.org.   */
 /* ------------------------------------------------------------------ */
@@ -241,7 +245,7 @@ void *phys_alloc(uint64_t bytes)
 void kmain(uint64_t mbi2_info)
 {
     serial_init();
-    serial_write("\nAurelion kernel v1.0.0-dev\n");
+    serial_write("\nAurelion kernel v1.0.0-dev rev " BUILD_REV "\n");
     serial_write("[boot] long mode active; installing GDT...\n");
     gdt_init();
     serial_write("[boot] GDT loaded (64-bit, ring 0)\n");
