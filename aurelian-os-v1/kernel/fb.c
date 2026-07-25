@@ -15,6 +15,9 @@
 static struct fb_info g_fb;
 static uint32_t      *g_back;   /* compositing target  */
 static uint32_t      *g_bg;     /* upscaled wallpaper  */
+static uint32_t      *g_fade;   /* previous wallpaper, for cross-fades */
+static int            g_fade_t; /* 0..256, 256 = fade complete         */
+static int            g_fading;
 static uint8_t        g_ready;
 
 /* Low-resolution blurred wallpaper: the Mica base. Sampling a small, blurred
@@ -40,11 +43,13 @@ static uint32_t isqrt32(uint32_t v)
     return x;
 }
 
-int fb_init(const struct fb_info *info, uint32_t *backbuffer, uint32_t *bgbuffer)
+int fb_init(const struct fb_info *info, uint32_t *backbuffer, uint32_t *bgbuffer,
+            uint32_t *fadebuffer)
 {
     g_fb   = *info;
     g_back = backbuffer;
     g_bg   = bgbuffer;
+    g_fade = fadebuffer;
 
     uint64_t end = info->addr + (uint64_t)info->height * info->pitch;
     g_ready = (info->type == 1 && (info->bpp == 32 || info->bpp == 24) &&
@@ -342,10 +347,32 @@ void fb_set_wallpaper_gradient(uint32_t top, uint32_t bottom)
     build_blur();
 }
 
+void fb_fade_begin(void)
+{
+    if (!g_ready || !g_fade) return;
+    memcpy(g_fade, g_bg, (size_t)g_fb.width * g_fb.height * 4);
+    g_fade_t = 0;
+    g_fading = 1;
+}
+
+int fb_fade_step(int delta)
+{
+    if (!g_fading) return 0;
+    g_fade_t += delta;
+    if (g_fade_t >= 256) { g_fade_t = 256; g_fading = 0; }
+    return g_fading;
+}
+
+int fb_fade_active(void) { return g_fading; }
+
 void fb_draw_background(void)
 {
     if (!g_ready) return;
-    memcpy(g_back, g_bg, (size_t)g_fb.width * g_fb.height * 4);
+    uint32_t n = g_fb.width * g_fb.height;
+    if (!g_fading) { memcpy(g_back, g_bg, (size_t)n * 4); return; }
+    uint8_t a = (uint8_t)(g_fade_t > 255 ? 255 : g_fade_t);
+    for (uint32_t i = 0; i < n; i++)
+        g_back[i] = blend(g_fade[i], g_bg[i], a);
 }
 
 uint32_t fb_mica_at(int x, int y)

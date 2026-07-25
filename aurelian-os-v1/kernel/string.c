@@ -63,3 +63,12 @@ char *uitoa(uint32_t val, char *buf, int base)
     buf[j] = '\0';
     return buf;
 }
+
+int memcmp(const void *a, const void *b, size_t n)
+{
+    const unsigned char *p = (const unsigned char *)a;
+    const unsigned char *q = (const unsigned char *)b;
+    for (size_t i = 0; i < n; i++)
+        if (p[i] != q[i]) return (int)p[i] - (int)q[i];
+    return 0;
+}

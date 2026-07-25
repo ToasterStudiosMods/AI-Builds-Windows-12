@@ -20,6 +20,9 @@
 #include "shell.h"
 #include "mem.h"
 #include "sched.h"
+#include "e1000.h"
+#include "net.h"
+#include "pci.h"
 #include <stdarg.h>
 
 /* ------------------------------------------------------------------ */
@@ -256,16 +259,17 @@ void kmain(uint64_t mbi2_info)
     /* Carve the compositor's buffers out of free physical memory. */
     arena_init(&bf);
     uint64_t px = (uint64_t)bf.fb.width * bf.fb.height;
-    uint32_t *back = 0, *bgbuf = 0;
+    uint32_t *back = 0, *bgbuf = 0, *fadebuf = 0;
     if (bf.have_fb && px) {
         back  = (uint32_t *)phys_alloc(px * 4);
         bgbuf = (uint32_t *)phys_alloc(px * 4);
+        fadebuf = (uint32_t *)phys_alloc(px * 4);
     }
     serial_write("[mem] arena "); serial_write_hex(arena_ptr);
     serial_write(" .. ");         serial_write_hex(arena_end);
     serial_write(back && bgbuf ? " (buffers ok)\n" : " (ALLOC FAILED)\n");
 
-    if (bf.have_fb && fb_init(&bf.fb, back, bgbuf)) {
+    if (bf.have_fb && fb_init(&bf.fb, back, bgbuf, fadebuf)) {
         serial_write("[drv] IDT + PIC + timer + keyboard + mouse...\n");
         idt_init();
         timer_init(100);
@@ -273,6 +277,8 @@ void kmain(uint64_t mbi2_info)
         mouse_init();
         heap_init(4 * 1024 * 1024);
         sched_init("luma-shell");
+        pci_scan();
+        if (e1000_init()) net_init();
         interrupts_enable();
         serial_write("[drv] drivers up; starting Luma Shell (");
         serial_write_u64((uint64_t)bf.nwp); serial_write(" wallpapers).\n");

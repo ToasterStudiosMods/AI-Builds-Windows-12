@@ -19,6 +19,8 @@
 #include "pci.h"
 #include "sched.h"
 #include "mem.h"
+#include "e1000.h"
+#include "net.h"
 #include "serial.h"
 #include "string.h"
 #include <stdint.h>
@@ -90,13 +92,36 @@ static const char *app_short[APP_COUNT] = {
     "Settings", "Tasks", "About"
 };
 
-struct win { int x, y, w, h; uint8_t open, min; };
+/* anim: 0..256 open progress, eased when drawn. Windows slide up into place
+ * instead of appearing instantly. */
+struct win { int x, y, w, h; uint8_t open, min; int16_t anim; };
 static struct win wins[APP_COUNT];
 static int zlist[APP_COUNT], zn;
 
 /* ================================================================== */
 /* 4. Small helpers                                                    */
 /* ================================================================== */
+/* ---- animation ----------------------------------------------------- */
+#define ANIM_FULL 256
+static int start_anim;          /* Start menu reveal 0..256           */
+static int hover_anim[16];      /* taskbar button hover ramps         */
+
+/* ease-out cubic on 0..256 — fast at first, settling gently at the end */
+static int ease_out(int t)
+{
+    if (t <= 0) return 0;
+    if (t >= ANIM_FULL) return ANIM_FULL;
+    int u = ANIM_FULL - t;
+    return ANIM_FULL - (u * u * u) / (ANIM_FULL * ANIM_FULL);
+}
+
+static int step_toward(int v, int target, int rate)
+{
+    if (v < target) { v += rate; if (v > target) v = target; }
+    else if (v > target) { v -= rate; if (v < target) v = target; }
+    return v;
+}
+
 static int in_r(int px, int py, int x, int y, int w, int h)
 { return px >= x && px < x + w && py >= y && py < y + h; }
 
@@ -110,6 +135,17 @@ static int str_pre(const char *s, const char *pre)
 
 static int text_bold(int x, int y, const char *s, uint32_t c, int sc)
 { fb_text(x, y, s, c, sc); return fb_text(x + 1, y, s, c, sc); }
+
+/* 2-digit hex, for MAC octets. */
+static int hex8(int x, int y, uint8_t v, uint32_t c)
+{
+    static const char *H = "0123456789ABCDEF";
+    char b[3];
+    b[0] = H[(v >> 4) & 0xF];
+    b[1] = H[v & 0xF];
+    b[2] = 0;
+    return fb_text(x, y, b, c, S);
+}
 
 /* 4-digit hex, for PCI ids. */
 static int hex16(int x, int y, uint16_t v, uint32_t c)
@@ -221,6 +257,7 @@ static void open_app(int a)
     if (!wins[a].open) {
         wins[a].open = 1;
         wins[a].min  = 0;
+        wins[a].anim = 0;      /* animate in */
         /* cascade, keeping the window on-screen */
         int step = 28 * S;
         wins[a].x = clampi(60 * S + (a % 5) * step, 0, SW - wins[a].w);
@@ -311,6 +348,7 @@ static uint32_t mouse_events, key_events;
 static void wallpaper_select(int i)
 {
     if (i < 0 || i >= wp_count || i == wp_active) return;
+    if (wp_active >= 0) fb_fade_begin();   /* keep the old one to blend from */
     wp_active = i;
     fb_set_wallpaper(wp_px[i], wp_w[i], wp_h[i]);
 }
@@ -677,10 +715,44 @@ static void draw_settings(int a)
             hex16(p2, y2 + 15 * S, d->device, T.fg2);
             y2 += rowh;
         }
-        int nic = pci_find_network();
-        fb_text(px, oy + h - 22 * S,
-                nic >= 0 ? "Ethernet controller present - no driver yet"
-                         : "no network controller found", T.fg2, S);
+        /* --- network status, straight from the driver --- */
+        const struct e1000_state *e = e1000_get();
+        const struct net_state   *n = net_get();
+        int ny = oy + h - 74 * S;
+        fb_fill(px, ny - 8 * S, pw, 1, T.stroke);
+        if (!e->present) {
+            fb_text(px, ny, "No supported network card", T.fg2, S);
+        } else {
+            int q2 = fb_text(px, ny, "MAC ", T.fg2, S);
+            for (int i = 0; i < 6; i++) {
+                q2 = hex8(q2, ny, e->mac[i], T.fg);
+                if (i < 5) q2 = fb_text(q2, ny, ":", T.fg2, S);
+            }
+            q2 = fb_text(q2, ny, "   link ", T.fg2, S);
+            fb_text(q2, ny, e->link_up ? "up" : "down",
+                    e->link_up ? 0x00059669u : 0x00C42B1Cu, S);
+
+            int ry = ny + 17 * S;
+            int q3 = fb_text(px, ry, "tx ", T.fg2, S);
+            q3 = fb_num(q3, ry, e->tx_packets, T.fg, S);
+            q3 = fb_text(q3, ry, "  rx ", T.fg2, S);
+            q3 = fb_num(q3, ry, e->rx_packets, T.fg, S);
+            q3 = fb_text(q3, ry, "  arp tx/rx ", T.fg2, S);
+            q3 = fb_num(q3, ry, n->arp_tx, T.fg, S);
+            q3 = fb_text(q3, ry, "/", T.fg2, S);
+            fb_num(q3, ry, n->arp_rx, T.fg, S);
+
+            int gy = ny + 34 * S;
+            if (n->gw_resolved) {
+                int q4 = fb_text(px, gy, "gateway 10.0.2.2 is at ", 0x00059669u, S);
+                for (int i = 0; i < 6; i++) {
+                    q4 = hex8(q4, gy, n->gw_mac[i], T.fg);
+                    if (i < 5) q4 = fb_text(q4, gy, ":", T.fg2, S);
+                }
+            } else {
+                fb_text(px, gy, "resolving gateway 10.0.2.2 ...", T.fg2, S);
+            }
+        }
     } else {
         icon(APP_ABOUT, px, py, 40 * S);
         text_bold(px + 52 * S, py + 2 * S, "Aurelian OS", T.fg, 2 * S);
@@ -786,6 +858,9 @@ static void draw_window(int a, int focused)
 {
     struct win *W = &wins[a];
     int x = W->x, y = W->y, w = W->w, h = W->h;
+    /* slide up into place while opening */
+    int e = ease_out(W->anim);
+    y += ((ANIM_FULL - e) * 26 * S) / ANIM_FULL;
 
     fb_shadow(x, y, w, h, RAD, 9 * S);
     fb_mica_round(x, y, w, h, RAD, T.mica, T.mica_a);
@@ -868,10 +943,11 @@ static void draw_taskbar(void)
     for (int i = 0; i < APP_COUNT; i++, bx += pitch) {
         int running = wins[i].open;
         int focused = (top_app() == i);
-        int h2 = in_r(cx, cy, bx, byy, bs, bs);
-        if (h2 || (running && focused))
-            fb_round(bx, byy, bs, bs, RADS,
-                     (running && focused) ? blend(T.mica, T.fg, 0x1C) : T.ctrl_hi);
+        if (running && focused)
+            fb_round(bx, byy, bs, bs, RADS, blend(T.mica, T.fg, 0x1C));
+        if (hover_anim[i] > 0)                 /* smooth hover fade */
+            fb_round_a(bx, byy, bs, bs, RADS, T.ctrl_hi,
+                       (uint8_t)(ease_out(hover_anim[i]) * 220 / ANIM_FULL));
         icon(i, bx + (bs - 22 * S) / 2, byy + (bs - 22 * S) / 2, 22 * S);
         if (running) {
             int pw = (focused && !wins[i].min) ? 16 * S : 7 * S;
@@ -910,6 +986,14 @@ static void draw_start(void)
 {
     int x, y, w, h;
     start_rect(&x, &y, &w, &h);
+    /* reveal: the panel grows upward out of the taskbar */
+    int se = ease_out(start_anim);
+    if (se < ANIM_FULL) {
+        int full = h;
+        h = (full * se) / ANIM_FULL;
+        y += full - h;
+        if (h < 8 * S) return;
+    }
     fb_shadow(x, y, w, h, RAD, 12 * S);
     fb_mica_round(x, y, w, h, RAD, T.mica, 0xE4);
     fb_round_border(x, y, w, h, RAD, 1, T.stroke, 0xFF);
@@ -1391,6 +1475,23 @@ static void task_heap_churn(void)
     }
 }
 
+/* Service the NIC: retry ARP until the gateway answers, then keep draining
+ * the receive ring. Polled from its own thread rather than an IRQ. */
+static void task_net(void)
+{
+    sched_sleep(50);                       /* let the link negotiate */
+    e1000_refresh_link();
+    for (;;) {
+        const struct net_state *n = net_get();
+        if (!n->gw_resolved && (n->arp_tx == 0 || (timer_ticks() % 200) < 10)) {
+            e1000_refresh_link();
+            net_arp_request();
+        }
+        net_poll();
+        sched_sleep(5);
+    }
+}
+
 static void task_counter(void)
 {
     for (;;) {
@@ -1408,7 +1509,6 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
     metrics_init();
     theme_apply();
     fs_init();
-    pci_scan();
     g_mem_kib = mem_kib;
     tb_btn = 44;
 
@@ -1454,6 +1554,7 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
 
     sched_spawn("heap-churn", task_heap_churn, 16384);
     sched_spawn("counter",    task_counter,    16384);
+    if (e1000_get()->present) sched_spawn("net", task_net, 16384);
 
     serial_write("[shell] Luma Shell running (");
     serial_write_u64((uint64_t)SW); serial_write("x");
@@ -1517,7 +1618,34 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
         uint64_t half = timer_ticks() / 50;      /* 2 Hz: clocks + caret blink */
         if (half != last) { last = half; dirty = 1; }
 
-        if (dirty) compose();
+        /* advance animations; while any is in flight we redraw every timer
+         * tick (100 Hz), which is what makes the motion smooth. */
+        int moving = 0;
+        for (int i = 0; i < APP_COUNT; i++)
+            if (wins[i].open && wins[i].anim < ANIM_FULL) {
+                wins[i].anim = (int16_t)step_toward(wins[i].anim, ANIM_FULL, 22);
+                moving = 1;
+            }
+        {
+            int target = start_open ? ANIM_FULL : 0;
+            if (start_anim != target) {
+                start_anim = step_toward(start_anim, target, 34);
+                moving = 1;
+            }
+        }
+        for (int i = 0; i < APP_COUNT; i++) {
+            int pitch = tb_btn * S, bs = 38 * S;
+            int bx = taskbar_cluster_x() + pitch * (i + 1);
+            int byy = SH - TASKH + (TASKH - bs) / 2;
+            int want = in_r(cx, cy, bx, byy, bs, bs) ? ANIM_FULL : 0;
+            if (hover_anim[i] != want) {
+                hover_anim[i] = step_toward(hover_anim[i], want, 40);
+                moving = 1;
+            }
+        }
+        if (fb_fade_step(14)) moving = 1;
+
+        if (dirty || moving) compose();
         __asm__ volatile ("hlt");
     }
 }
