@@ -33,6 +33,10 @@
 #define REG_TIPG      0x0410
 #define REG_TXDCTL    0x3828
 #define REG_RXDCTL    0x2828
+#define REG_TIDV      0x3820   /* transmit interrupt delay  */
+#define REG_TADV      0x382C   /* transmit absolute delay   */
+#define REG_RDTR      0x2820   /* receive delay timer       */
+#define REG_RADV      0x282C   /* receive absolute delay    */
 
 #define CTRL_LRST     (1u << 3)     /* link reset             */
 #define CTRL_ILOS     (1u << 7)     /* invert loss-of-signal  */
@@ -207,6 +211,12 @@ int e1000_init(void)
      * being queued but never marked done. */
     wr(REG_TIPG, 0x0060200Au);
 
+    /* No interrupt/write-back batching: report every descriptor as it is done. */
+    wr(REG_TIDV, 0);
+    wr(REG_TADV, 0);
+    wr(REG_RDTR, 0);
+    wr(REG_RADV, 0);
+
     if (!read_mac()) { serial_write("[e1000] could not read MAC\n"); return 0; }
     serial_write("[e1000] mac ");
     for (int i = 0; i < 6; i++) { serial_write_hex8(st.mac[i]); serial_write(i < 5 ? ":" : "\n"); }
@@ -223,6 +233,12 @@ int e1000_init(void)
     }
     memset((void *)rxd, 0, NRX * sizeof(struct rx_desc));
     memset((void *)txd, 0, NTX * sizeof(struct tx_desc));
+
+    /* Map the pages holding the rings uncached. The descriptors are written by
+     * the controller and read by us; taking the cache out of that path removes
+     * any question about when a write-back becomes visible. */
+    map_uncached((uint64_t)(uintptr_t)rxd);
+    map_uncached((uint64_t)(uintptr_t)txd);
 
     for (int i = 0; i < NRX; i++) {
         rxd[i].addr   = (uint64_t)(uintptr_t)(rxbuf + (uint64_t)i * BUFSZ);
@@ -262,7 +278,8 @@ int e1000_init(void)
     /* Descriptor write-back thresholds. Left at the reset value the queue can
      * sit there without ever retiring a descriptor. GRAN=1 (descriptor
      * granularity), WTHRESH=1 so status is written back per descriptor. */
-    wr(REG_TXDCTL, (1u << 24) | (1u << 16) | 1u);
+    wr(REG_TXDCTL, 1u << 24);        /* GRAN=descriptor, WTHRESH=0 */
+    wr(REG_RXDCTL, 1u << 24);
     wr(REG_TCTL, TCTL_EN | TCTL_PSP | (0x10 << 4) | (0x40 << 12));
 
     /* Bring the link up and let the PHY negotiate. */
