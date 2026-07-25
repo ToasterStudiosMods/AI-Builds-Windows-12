@@ -8,8 +8,10 @@
 
 #include <stdint.h>
 
-/* Run the desktop shell. Never returns. `n` wallpaper modules are described by
- * the parallel wp_addr/wp_size arrays (n==0 -> gradient background). */
-void shell_run(int n, const uint64_t *wp_addr, const uint32_t *wp_size);
+/* Run the desktop shell; never returns.
+ *   nwp / wp_addr / wp_size — wallpaper boot modules (nwp == 0 -> gradient)
+ *   mem_kib                 — usable memory reported by the loader           */
+void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
+               uint32_t mem_kib);
 
 #endif /* AURELIAN_SHELL_H */

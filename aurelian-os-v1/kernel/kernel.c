@@ -153,8 +153,8 @@ static void text_fallback(const struct boot_facts *bf)
     kprintln("Halting CPU.");
 }
 
-/* Compositing backbuffer for the shell (3 MiB). */
-static uint32_t g_backbuffer[1024 * 768];
+/* Compositing backbuffer, sized for the largest mode the compositor supports. */
+static uint32_t g_backbuffer[FB_MAX_PX];
 
 /* ------------------------------------------------------------------ */
 /* Entry point                                                        */
@@ -187,7 +187,7 @@ void kmain(uint64_t mbi2_info)
         interrupts_enable();
         serial_write("[drv] drivers up; starting Luma Shell (");
         serial_write_u64((uint64_t)bf.nwp); serial_write(" wallpapers).\n");
-        shell_run(bf.nwp, bf.wp_addr, bf.wp_size);       /* never returns */
+        shell_run(bf.nwp, bf.wp_addr, bf.wp_size, bf.mem_upper_kib);  /* no return */
     } else {
         serial_write("[fb] no usable framebuffer; VGA text.\n");
         text_fallback(&bf);
