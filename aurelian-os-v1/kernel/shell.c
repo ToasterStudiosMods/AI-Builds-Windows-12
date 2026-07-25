@@ -1686,6 +1686,7 @@ static void task_net(void)
         nic_poll();
         sched_sleep(10);                   /* 100 ms per attempt, up to ~6 s */
     }
+    int reported = 0;
     for (;;) {
         const struct net_state *n = net_get();
         if (!n->gw_resolved && (n->arp_tx == 0 || (timer_ticks() % 200) < 10)) {
@@ -1694,6 +1695,20 @@ static void task_net(void)
         }
         nic_poll();
         net_poll();
+
+        /* Once the gateway has answered, say so with the counters attached.
+         * tx_done is the one that matters: it only advances when the device
+         * writes a buffer back through the used ring, which is precisely what
+         * never happened while bus mastering was off. */
+        if (n->gw_resolved && !reported) {
+            const struct nic_info *c = nic_get();
+            reported = 1;
+            serial_write("[nic] ");        serial_write(c->name);
+            serial_write(" tx ");          serial_write_u64(c->tx_packets);
+            serial_write(" confirmed ");   serial_write_u64(c->tx_done);
+            serial_write(" rx ");          serial_write_u64(c->rx_packets);
+            serial_write("\n");
+        }
         sched_sleep(5);
     }
 }
