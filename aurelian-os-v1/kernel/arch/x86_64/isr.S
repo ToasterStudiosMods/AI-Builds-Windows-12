@@ -105,10 +105,17 @@ isr_common:
     push    %r15
 
     /* 15 GPRs pushed (120 bytes): vector at rsp+120, error code at rsp+128. */
-    movq    120(%rsp), %rdi        /* arg1 = vector     */
-    movq    128(%rsp), %rsi        /* arg2 = error code */
+    movq    120(%rsp), %rdi        /* arg1 = vector            */
+    movq    128(%rsp), %rsi        /* arg2 = error code        */
+    movq    %rsp, %rdx             /* arg3 = interrupted stack */
     cld
     call    interrupt_common
+
+    /* interrupt_common returns the stack to resume on. Normally that is the one
+     * we came in on; when the scheduler decides to preempt, it is a different
+     * task's stack, and the pops plus iretq below therefore resume that thread
+     * instead. This one instruction is the whole context switch. */
+    movq    %rax, %rsp
 
     pop     %r15
     pop     %r14

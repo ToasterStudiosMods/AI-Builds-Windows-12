@@ -17,6 +17,8 @@
 #include "timer.h"
 #include "rtc.h"
 #include "pci.h"
+#include "sched.h"
+#include "mem.h"
 #include "serial.h"
 #include "string.h"
 #include <stdint.h>
@@ -77,14 +79,15 @@ static void metrics_init(void)
 /* 3. Apps                                                             */
 /* ================================================================== */
 enum { APP_EXPLORER, APP_NOTEPAD, APP_CALC, APP_CLOCK,
-       APP_PAINT, APP_TERM, APP_SETTINGS, APP_ABOUT, APP_COUNT };
+       APP_PAINT, APP_TERM, APP_SETTINGS, APP_TASKS, APP_ABOUT, APP_COUNT };
 
 static const char *app_title[APP_COUNT] = {
     "File Explorer", "Notepad", "Calculator", "Clock",
-    "Paint", "Terminal", "Settings", "About Aurelian OS"
+    "Paint", "Terminal", "Settings", "Task Manager", "About Aurelian OS"
 };
 static const char *app_short[APP_COUNT] = {
-    "Files", "Notepad", "Calc", "Clock", "Paint", "Terminal", "Settings", "About"
+    "Files", "Notepad", "Calc", "Clock", "Paint", "Terminal",
+    "Settings", "Tasks", "About"
 };
 
 struct win { int x, y, w, h; uint8_t open, min; };
@@ -180,6 +183,15 @@ static void icon(int a, int x, int y, int sz)
         fb_round(x + sz - q,   y + r - half,   q,   nub, 1, gc);
         fb_round(x + q / 2, y + q / 2, sz - q, sz - q, (sz - q) / 2, gc);
         fb_round(x + r - q / 2, y + r - q / 2, q, q, q / 2, T.layer);
+        break;
+    }
+    case APP_TASKS: {                                   /* bar chart */
+        fb_round(x, y, sz, sz, RADS / 2 + 1, 0x00F7FAFCu);
+        fb_round_border(x, y, sz, sz, RADS / 2 + 1, 1, 0x00A8B0BEu, 0xFF);
+        int bw = q / 2, base = y + sz - q / 2;
+        fb_fill(x + q / 2,               base - q,     bw, q,     0x000891B2u);
+        fb_fill(x + q / 2 + bw + 2,      base - q * 2, bw, q * 2, 0x0022C55Eu);
+        fb_fill(x + q / 2 + 2*(bw + 2),  base - q * 3 / 2, bw, q * 3 / 2, 0x00F59E0Bu);
         break;
     }
     default:                                            /* about / logo */
@@ -286,6 +298,10 @@ static const uint8_t *wp_px[MAX_WP];
 static uint32_t wp_w[MAX_WP], wp_h[MAX_WP];
 static int wp_count, wp_active = -1;
 static uint32_t g_mem_kib;
+
+/* background-thread counters (defined here so the Task Manager can read
+ * them; the threads themselves live further down) */
+static volatile uint32_t churn_rounds, churn_fail, counter_ticks;
 
 /* input counters — surfaced in Settings > System so a user can confirm the
  * PS/2 drivers are delivering events (there is no way to inject mouse input
@@ -678,6 +694,72 @@ static void draw_settings(int a)
     }
 }
 
+static const char *state_name(uint8_t s)
+{
+    switch (s) {
+    case TASK_READY:    return "ready";
+    case TASK_RUNNING:  return "running";
+    case TASK_SLEEPING: return "sleeping";
+    default:            return "-";
+    }
+}
+
+static void draw_tasks(int a)
+{
+    int ox = co_x(a), oy = co_y(a), w = co_w(a), h = co_h(a);
+    int px = ox + PAD, py = oy + PAD, pw = w - 2 * PAD;
+
+    int q = fb_text(px, py, "Kernel threads - ", T.fg2, S);
+    q = fb_num(q, py, (uint32_t)sched_count(), T.fg, S);
+    q = fb_text(q, py, "  switches ", T.fg2, S);
+    fb_num(q, py, (uint32_t)sched_switches(), T.fg, S);
+
+    /* column headers */
+    int ty = py + LH + 6 * S;
+    fb_text(px,             ty, "id", T.fg2, S);
+    fb_text(px + 28 * S,    ty, "name", T.fg2, S);
+    fb_text(px + 150 * S,   ty, "state", T.fg2, S);
+    fb_text(px + 240 * S,   ty, "slices", T.fg2, S);
+    fb_fill(px, ty + 18 * S, pw, 1, T.stroke);
+
+    int row = 22 * S, y2 = ty + 24 * S;
+    for (int i = 0; i < SCHED_MAX_TASKS; i++) {
+        const struct task *t = sched_task(i);
+        if (!t || t->state == TASK_FREE) continue;
+        int me = (i == sched_current());
+        if (me) fb_round(px - 6 * S, y2 - 2 * S, pw + 12 * S, row, RADS,
+                         blend(T.layer, accent, 0x20));
+        fb_num(px, y2, (uint32_t)t->id, T.fg2, S);
+        fb_text(px + 28 * S, y2, t->name, T.fg, S);
+        fb_text(px + 150 * S, y2, state_name(t->state),
+                t->state == TASK_RUNNING ? 0x00059669u : T.fg2, S);
+        fb_num(px + 240 * S, y2, (uint32_t)t->slices, T.fg, S);
+        y2 += row;
+    }
+
+    /* heap usage bar */
+    int hy = oy + h - 58 * S;
+    fb_fill(px, hy - 10 * S, pw, 1, T.stroke);
+    int p2 = fb_text(px, hy, "Heap ", T.fg2, S);
+    p2 = fb_num(p2, hy, (uint32_t)(heap_used() / 1024), T.fg, S);
+    p2 = fb_text(p2, hy, " / ", T.fg2, S);
+    p2 = fb_num(p2, hy, (uint32_t)(heap_total() / 1024), T.fg, S);
+    p2 = fb_text(p2, hy, " KiB   blocks ", T.fg2, S);
+    fb_num(p2, hy, heap_blocks(), T.fg, S);
+
+    int bw = pw, by = hy + LH + 2 * S;
+    uint64_t tot = heap_total() ? heap_total() : 1;
+    int fillw = (int)((uint64_t)bw * heap_used() / tot);
+    fb_round(px, by, bw, 10 * S, 5 * S, T.ctrl_lo);
+    if (fillw > 0) fb_round(px, by, fillw, 10 * S, 5 * S, accent);
+
+    int sy = by + 18 * S;
+    int p3 = fb_text(px, sy, "churn rounds ", T.fg2, S);
+    p3 = fb_num(p3, sy, churn_rounds, T.fg, S);
+    p3 = fb_text(p3, sy, "  alloc fails ", T.fg2, S);
+    fb_num(p3, sy, churn_fail, churn_fail ? 0x00C42B1Cu : 0x00059669u, S);
+}
+
 static void draw_about(int a)
 {
     int ox = co_x(a), oy = co_y(a), w = co_w(a);
@@ -740,6 +822,7 @@ static void draw_window(int a, int focused)
     case APP_PAINT:    draw_paint(a);    break;
     case APP_TERM:     draw_term(a);     break;
     case APP_SETTINGS: draw_settings(a); break;
+    case APP_TASKS:    draw_tasks(a);    break;
     default:           draw_about(a);    break;
     }
 
@@ -1286,7 +1369,38 @@ static void on_press(void)
 }
 
 /* ================================================================== */
-/* 16. Entry                                                           */
+/* 16. Background kernel threads                                       */
+/*                                                                     */
+/* These exist to prove the scheduler and heap actually work rather     */
+/* than merely compile: one hammers the allocator while being preempted */
+/* (which would corrupt the free list or fault if either were wrong),   */
+/* the other just sleeps and counts, exercising the timed wake path.    */
+/* ================================================================== */
+static void task_heap_churn(void)
+{
+    void *p[6];
+    for (;;) {
+        for (int i = 0; i < 6; i++) {
+            p[i] = kmalloc(64u << i);              /* 64 B .. 2 KiB */
+            if (!p[i]) churn_fail++;
+            else ((uint8_t *)p[i])[0] = (uint8_t)i; /* touch it */
+        }
+        for (int i = 5; i >= 0; i--) kfree(p[i]);   /* free out of order */
+        churn_rounds++;
+        sched_sleep(10);                            /* 100 ms */
+    }
+}
+
+static void task_counter(void)
+{
+    for (;;) {
+        counter_ticks++;
+        sched_sleep(100);                           /* 1 s */
+    }
+}
+
+/* ================================================================== */
+/* 17. Entry                                                           */
 /* ================================================================== */
 void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
                uint32_t mem_kib)
@@ -1324,6 +1438,7 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
     wins[APP_PAINT]    = (struct win){ 0,0, 560*S, 380*S, 0,0 };
     wins[APP_TERM]     = (struct win){ 0,0, 540*S, 320*S, 0,0 };
     wins[APP_SETTINGS] = (struct win){ 0,0, 620*S, 430*S, 0,0 };
+    wins[APP_TASKS]    = (struct win){ 0,0, 520*S, 400*S, 0,0 };
     wins[APP_ABOUT]    = (struct win){ 0,0, 430*S, 330*S, 0,0 };
     for (int i = 0; i < APP_COUNT; i++) {
         if (wins[i].w > SW - 20 * S) wins[i].w = SW - 20 * S;
@@ -1336,6 +1451,9 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
 
     cx = SW / 2; cy = SH / 2;
     open_app(APP_ABOUT);
+
+    sched_spawn("heap-churn", task_heap_churn, 16384);
+    sched_spawn("counter",    task_counter,    16384);
 
     serial_write("[shell] Luma Shell running (");
     serial_write_u64((uint64_t)SW); serial_write("x");

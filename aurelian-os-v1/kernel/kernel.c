@@ -18,6 +18,8 @@
 #include "keyboard.h"
 #include "mouse.h"
 #include "shell.h"
+#include "mem.h"
+#include "sched.h"
 #include <stdarg.h>
 
 /* ------------------------------------------------------------------ */
@@ -220,7 +222,7 @@ static void arena_init(const struct boot_facts *bf)
     arena_end = best_base + best_len;
 }
 
-static void *arena_alloc(uint64_t bytes)
+void *phys_alloc(uint64_t bytes)
 {
     bytes = (bytes + 0xFFFu) & ~0xFFFull;
     if (arena_ptr + bytes > arena_end) return 0;
@@ -256,8 +258,8 @@ void kmain(uint64_t mbi2_info)
     uint64_t px = (uint64_t)bf.fb.width * bf.fb.height;
     uint32_t *back = 0, *bgbuf = 0;
     if (bf.have_fb && px) {
-        back  = (uint32_t *)arena_alloc(px * 4);
-        bgbuf = (uint32_t *)arena_alloc(px * 4);
+        back  = (uint32_t *)phys_alloc(px * 4);
+        bgbuf = (uint32_t *)phys_alloc(px * 4);
     }
     serial_write("[mem] arena "); serial_write_hex(arena_ptr);
     serial_write(" .. ");         serial_write_hex(arena_end);
@@ -269,6 +271,8 @@ void kmain(uint64_t mbi2_info)
         timer_init(100);
         keyboard_init();
         mouse_init();
+        heap_init(4 * 1024 * 1024);
+        sched_init("luma-shell");
         interrupts_enable();
         serial_write("[drv] drivers up; starting Luma Shell (");
         serial_write_u64((uint64_t)bf.nwp); serial_write(" wallpapers).\n");

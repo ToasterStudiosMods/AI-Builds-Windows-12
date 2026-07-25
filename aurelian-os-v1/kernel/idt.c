@@ -9,6 +9,7 @@
 
 #include "interrupts.h"
 #include "pic.h"
+#include "sched.h"
 #include "serial.h"
 #include <stdint.h>
 
@@ -71,15 +72,19 @@ void interrupts_enable(void)
     __asm__ volatile ("sti");
 }
 
-/* Called by every stub in isr.S with the vector and (real or dummy) error
- * code. Vectors 0-31 are CPU exceptions; 32-47 are hardware IRQs. */
-void interrupt_common(uint64_t vec, uint64_t err)
+/* Called by every stub in isr.S with the vector, the (real or dummy) error code
+ * and the interrupted stack pointer. Returns the stack pointer to resume on —
+ * the scheduler uses that to switch threads. Vectors 0-31 are CPU exceptions;
+ * 32-47 are hardware IRQs. */
+uint64_t interrupt_common(uint64_t vec, uint64_t err, uint64_t rsp)
 {
     if (vec < 32) {
         serial_write("\n*** CPU EXCEPTION vector=");
         serial_write_u64(vec);
         serial_write(" err=");
         serial_write_hex(err);
+        serial_write(" rsp=");
+        serial_write_hex(rsp);
         serial_write(" — halting ***\n");
         for (;;)
             __asm__ volatile ("cli; hlt");
@@ -88,5 +93,13 @@ void interrupt_common(uint64_t vec, uint64_t err)
     uint8_t irq = (uint8_t)(vec - 32);
     if (irq < 16 && irq_handlers[irq])
         irq_handlers[irq]();
+
+    /* sched_yield() raises vector 32 in software; there is no PIC interrupt to
+     * acknowledge in that case, but sending the EOI is harmless and keeps the
+     * path uniform. */
     pic_eoi(irq);
+
+    if (irq == 0)                       /* timer: the preemption point */
+        rsp = sched_tick(rsp);
+    return rsp;
 }

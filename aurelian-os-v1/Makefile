@@ -34,7 +34,7 @@ LDFLAGS := -m elf_x86_64 -T kernel/arch/x86_64/linker.ld -nostdlib -z noexecstac
 C_SRCS  := kernel/kernel.c kernel/vga.c kernel/string.c kernel/fb.c \
 	   kernel/serial.c kernel/idt.c kernel/pic.c kernel/input.c \
 	   kernel/pit.c kernel/keyboard.c kernel/mouse.c kernel/rtc.c \
-	   kernel/fs.c kernel/pci.c kernel/shell.c kernel/arch/x86_64/gdt.c
+	   kernel/fs.c kernel/pci.c kernel/heap.c kernel/sched.c kernel/shell.c kernel/arch/x86_64/gdt.c
 ASM_SRCS := kernel/arch/x86_64/boot.S kernel/arch/x86_64/gdt_flush.S \
 	   kernel/arch/x86_64/isr.S
 OBJ     := $(C_SRCS:.c=.o) $(ASM_SRCS:.S=.o)
