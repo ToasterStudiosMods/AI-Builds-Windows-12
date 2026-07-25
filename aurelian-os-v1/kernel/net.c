@@ -83,7 +83,7 @@ static void handle_arp(const uint8_t *payload, uint16_t len)
 
     serial_write("[net] ARP reply: 10.0.2.2 is at ");
     for (int i = 0; i < 6; i++) {
-        serial_write_hex(ns.gw_mac[i]);
+        serial_write_hex8(ns.gw_mac[i]);
         serial_write(i < 5 ? ":" : "\n");
     }
 }

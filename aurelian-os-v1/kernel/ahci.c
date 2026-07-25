@@ -288,7 +288,7 @@ int ahci_init(void)
         if (ahci_read(0, 1, dmabuf)) {
             memcpy(first_sector, dmabuf, sizeof(first_sector));
             serial_write("[ahci] LBA0 reads ");
-            for (int i = 0; i < 4; i++) { serial_write_hex(first_sector[i]); serial_write(" "); }
+            for (int i = 0; i < 4; i++) { serial_write_hex8(first_sector[i]); serial_write(" "); }
             serial_write("\n");
         } else {
             serial_write("[ahci] LBA0 read FAILED\n");

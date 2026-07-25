@@ -30,6 +30,7 @@ void serial_init(void)
     outb(COM1 + 4, 0x0B); /* IRQs enabled, RTS/DSR set */
 }
 
+void serial_putc_pub(char c);
 static void serial_putc(char c)
 {
     while (!(inb(COM1 + 5) & 0x20))
@@ -61,3 +62,12 @@ void serial_write_hex(uint64_t v)
     for (int shift = 60; shift >= 0; shift -= 4)
         serial_putc(hex[(v >> shift) & 0xF]);
 }
+
+void serial_write_hex8(uint8_t v)
+{
+    const char *hex = "0123456789ABCDEF";
+    serial_putc_pub(hex[(v >> 4) & 0xF]);
+    serial_putc_pub(hex[v & 0xF]);
+}
+
+void serial_putc_pub(char c) { serial_putc(c); }

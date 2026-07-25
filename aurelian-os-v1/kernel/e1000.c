@@ -30,6 +30,13 @@
 #define REG_RAL0      0x5400
 #define REG_RAH0      0x5404
 
+#define REG_TIPG      0x0410
+
+#define CTRL_LRST     (1u << 3)     /* link reset             */
+#define CTRL_ILOS     (1u << 7)     /* invert loss-of-signal  */
+#define CTRL_RST      (1u << 26)    /* device reset           */
+#define CTRL_VME      (1u << 30)    /* VLAN mode enable       */
+#define CTRL_PHY_RST  (1u << 31)    /* PHY reset              */
 #define CTRL_SLU      (1u << 6)     /* set link up            */
 #define CTRL_ASDE     (1u << 5)     /* auto-speed detect      */
 #define STATUS_LU     (1u << 1)     /* link up                */
@@ -78,6 +85,8 @@ static volatile struct rx_desc *rxd;
 static volatile struct tx_desc *txd;
 static uint8_t *rxbuf, *txbuf;
 static uint32_t rx_next, tx_next;
+
+static inline void io_pause(void) { __asm__ volatile ("pause" ::: "memory"); }
 
 /* --- MMIO accessors. The window is mapped uncached (see map_uncached). --- */
 static inline void wr(uint32_t off, uint32_t v)
@@ -162,12 +171,33 @@ int e1000_init(void)
 
     serial_write("[e1000] mmio "); serial_write_hex(bar); serial_write("\n");
 
-    wr(REG_IMC, 0xFFFFFFFFu);                  /* mask all interrupts: we poll */
+    /* Full device reset first. Without it the MAC keeps whatever state the
+     * firmware left behind, and in particular the transmitter would accept
+     * descriptors without ever completing them. */
+    wr(REG_IMC, 0xFFFFFFFFu);
     rd(REG_ICR);
+    wr(REG_CTRL, rd(REG_CTRL) | CTRL_RST);
+    for (int spin = 0; spin < 1000000; spin++) {
+        if (!(rd(REG_CTRL) & CTRL_RST)) break;
+        io_pause();
+    }
+    wr(REG_IMC, 0xFFFFFFFFu);                  /* reset re-enables them */
+    rd(REG_ICR);
+
+    /* Link up, auto-speed detect; clear loopback, VLAN and the reset holds. */
+    uint32_t ctrl = rd(REG_CTRL);
+    ctrl |=  (CTRL_SLU | CTRL_ASDE);
+    ctrl &= ~(CTRL_LRST | CTRL_ILOS | CTRL_VME | CTRL_PHY_RST);
+    wr(REG_CTRL, ctrl);
+
+    /* Inter-packet gap. This is not optional: with IPGT left at zero the MAC
+     * never actually puts a frame on the wire, which shows up as descriptors
+     * being queued but never marked done. */
+    wr(REG_TIPG, 0x0060200Au);
 
     if (!read_mac()) { serial_write("[e1000] could not read MAC\n"); return 0; }
     serial_write("[e1000] mac ");
-    for (int i = 0; i < 6; i++) { serial_write_hex(st.mac[i]); serial_write(i < 5 ? ":" : "\n"); }
+    for (int i = 0; i < 6; i++) { serial_write_hex8(st.mac[i]); serial_write(i < 5 ? ":" : "\n"); }
 
     /* Descriptor rings and packet buffers. phys_alloc is page aligned, which
      * more than satisfies the 16-byte descriptor alignment requirement. */
@@ -225,6 +255,12 @@ int e1000_init(void)
     tx_next = 0;
     st.present = 1;
     e1000_refresh_link();
+
+    serial_write("[e1000] tctl "); serial_write_hex(rd(REG_TCTL));
+    serial_write(" rctl "); serial_write_hex(rd(REG_RCTL));
+    serial_write(" status "); serial_write_hex(rd(REG_STATUS));
+    serial_write("
+");
 
     serial_write("[e1000] ready, link ");
     serial_write(st.link_up ? "up\n" : "down (negotiating)\n");
