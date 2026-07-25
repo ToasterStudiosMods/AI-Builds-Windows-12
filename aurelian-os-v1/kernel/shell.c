@@ -1159,6 +1159,11 @@ static void app_click(int a, int lx, int ly)
  * Extended (E0-prefixed) keys arrive with bit 7 set — see keyboard.c. */
 static int app_keycode(int a, uint8_t k)
 {
+    if (a == APP_SETTINGS) {
+        /* 1..4 jump to a Settings page (it has no text fields to conflict) */
+        if (k >= 0x02 && k <= 0x05) { set_page = k - 0x02; return 1; }
+        return 0;
+    }
     if (a == APP_EXPLORER) {
         int n = fs_child_count(ex_dir);
         switch (k) {
