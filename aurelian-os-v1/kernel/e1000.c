@@ -31,6 +31,8 @@
 #define REG_RAH0      0x5404
 
 #define REG_TIPG      0x0410
+#define REG_TXDCTL    0x3828
+#define REG_RXDCTL    0x2828
 
 #define CTRL_LRST     (1u << 3)     /* link reset             */
 #define CTRL_ILOS     (1u << 7)     /* invert loss-of-signal  */
@@ -246,6 +248,10 @@ int e1000_init(void)
     wr(REG_TDLEN, NTX * sizeof(struct tx_desc));
     wr(REG_TDH, 0);
     wr(REG_TDT, 0);
+    /* Descriptor write-back thresholds. Left at the reset value the queue can
+     * sit there without ever retiring a descriptor. GRAN=1 (descriptor
+     * granularity), WTHRESH=1 so status is written back per descriptor. */
+    wr(REG_TXDCTL, (1u << 24) | (1u << 16) | 1u);
     wr(REG_TCTL, TCTL_EN | TCTL_PSP | (0x10 << 4) | (0x40 << 12));
 
     /* Bring the link up and let the PHY negotiate. */
@@ -283,11 +289,34 @@ int e1000_send(const void *frame, uint16_t len)
     wr(REG_TDT, tx_next);                              /* hand it to the card */
     st.tx_packets++;
 
+    static int dumped = 0;
+    if (!dumped) {
+        dumped = 1;
+        serial_write("[e1000] tx#1 tdbal "); serial_write_hex(rd(REG_TDBAL));
+        serial_write(" tdlen ");             serial_write_hex(rd(REG_TDLEN));
+        serial_write(" tdh ");               serial_write_hex(rd(REG_TDH));
+        serial_write(" tdt ");               serial_write_hex(rd(REG_TDT));
+        serial_write("\n[e1000] tx#1 desc0 cmd "); serial_write_hex8(txd[0].cmd);
+        serial_write(" len ");               serial_write_hex(txd[0].length);
+        serial_write(" ring@ ");             serial_write_hex((uint64_t)(uintptr_t)txd);
+        serial_write("\n");
+    }
+
     /* Wait briefly for the descriptor to be written back. This distinguishes
      * "queued" from "actually sent", which matters when debugging: a rising
      * tx_packets with a flat tx_done means the card never consumed it. */
     for (int spin = 0; spin < 200000; spin++)
         if (t->status & TXD_STAT_DD) { st.tx_done++; break; }
+
+    static int dumped2 = 0;
+    if (!dumped2) {
+        dumped2 = 1;
+        serial_write("[e1000] tx#1 after: tdh "); serial_write_hex(rd(REG_TDH));
+        serial_write(" status ");                 serial_write_hex8(txd[0].status);
+        serial_write(" tctl ");                   serial_write_hex(rd(REG_TCTL));
+        serial_write(" linkst ");                 serial_write_hex(rd(REG_STATUS));
+        serial_write("\n");
+    }
     return 1;
 }
 
