@@ -90,6 +90,15 @@ static uint32_t rx_next, tx_next;
 
 static inline void io_pause(void) { __asm__ volatile ("pause" ::: "memory"); }
 
+/* Descriptor rings live in ordinary write-back memory while the controller
+ * reads and writes them by DMA. Flush a descriptor before ringing the
+ * doorbell so the card cannot fetch a stale copy from RAM, and invalidate it
+ * before reading status so the CPU cannot answer from a cached line that
+ * predates the write-back. */
+static inline void dcache_flush(const void *p)
+{ __asm__ volatile ("clflush (%0)" :: "r"(p) : "memory"); }
+static inline void mem_fence(void) { __asm__ volatile ("mfence" ::: "memory"); }
+
 /* --- MMIO accessors. The window is mapped uncached (see map_uncached). --- */
 static inline void wr(uint32_t off, uint32_t v)
 { *(volatile uint32_t *)(uintptr_t)(st.mmio + off) = v; }
@@ -220,7 +229,8 @@ int e1000_init(void)
     }
     for (int i = 0; i < NTX; i++) {
         txd[i].addr   = (uint64_t)(uintptr_t)(txbuf + (uint64_t)i * BUFSZ);
-        txd[i].status = TXD_STAT_DD;           /* free */
+        txd[i].cmd    = 0;                     /* free */
+        txd[i].status = 0;
     }
 
     /* Program our address into receive-address slot 0 and set Address Valid.
@@ -286,13 +296,17 @@ int e1000_send(const void *frame, uint16_t len)
     }
 
     volatile struct tx_desc *t = &txd[tx_next];
-    if (!(t->status & TXD_STAT_DD)) return 0;          /* ring full */
+    dcache_flush((const void *)t);
+    if (t->cmd && !(t->status & TXD_STAT_DD)) return 0;   /* slot still in flight */
 
     memcpy(txbuf + (uint64_t)tx_next * BUFSZ, frame, len);
     t->length = len;
     t->cso    = 0;
     t->cmd    = TXD_CMD_EOP | TXD_CMD_IFCS | TXD_CMD_RS;
     t->status = 0;
+
+    dcache_flush((const void *)t);
+    mem_fence();                                       /* descriptor before doorbell */
 
     tx_next = (tx_next + 1) % NTX;
     wr(REG_TDT, tx_next);                              /* hand it to the card */
@@ -311,11 +325,6 @@ int e1000_send(const void *frame, uint16_t len)
         serial_write("\n");
     }
 
-    /* Wait briefly for the descriptor to be written back. This distinguishes
-     * "queued" from "actually sent", which matters when debugging: a rising
-     * tx_packets with a flat tx_done means the card never consumed it. */
-    for (int spin = 0; spin < 200000; spin++)
-        if (t->status & TXD_STAT_DD) { st.tx_done++; break; }
 
     static int dumped2 = 0;
     if (!dumped2) {
@@ -329,11 +338,28 @@ int e1000_send(const void *frame, uint16_t len)
     return 1;
 }
 
+/* Count transmit descriptors the card has finished with. Checking later rather
+ * than spinning inside send() avoids mistaking emulation latency for failure. */
+void e1000_reap(void)
+{
+    if (!st.present) return;
+    for (uint32_t i = 0; i < NTX; i++) {
+        volatile struct tx_desc *t = &txd[i];
+        if (!t->cmd) continue;                        /* never submitted */
+        dcache_flush((const void *)t);
+        if (t->status & TXD_STAT_DD) {
+            t->cmd = 0;                               /* accounted for */
+            st.tx_done++;
+        }
+    }
+}
+
 uint16_t e1000_receive(const uint8_t **buf)
 {
     if (!st.present) return 0;
 
     volatile struct rx_desc *r = &rxd[rx_next];
+    dcache_flush((const void *)r);
     if (!(r->status & RXD_STAT_DD)) return 0;          /* nothing new */
 
     uint16_t len = r->length;

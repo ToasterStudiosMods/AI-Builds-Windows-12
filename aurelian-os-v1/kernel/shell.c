@@ -1529,6 +1529,7 @@ static void task_net(void)
             e1000_refresh_link();
             net_arp_request();
         }
+        e1000_reap();
         net_poll();
         sched_sleep(5);
     }

@@ -30,6 +30,8 @@ int  e1000_send(const void *frame, uint16_t len);
 uint16_t e1000_receive(const uint8_t **buf);
 /* Refresh the cached link state. */
 void e1000_refresh_link(void);
+/* Account for completed transmits (call periodically, not from send). */
+void e1000_reap(void);
 /* Poll until the link comes up (or `tries` attempts elapse). */
 int  e1000_wait_link(int tries);
 
