@@ -83,11 +83,12 @@ SECTIONS
         *(.note .note.*)
     }
 
-    /* The Multiboot2 header must sit within the first 32 KiB of the ELF *file*.
-     * That only holds while .boot is allocated into the first PT_LOAD segment
-     * ahead of .text — if the .multiboot input section ever loses its "a" flag
-     * the linker silently orphans it to the end of the file and GRUB reports
-     * "no multiboot header found". Fail the build instead. */
-    ASSERT(ADDR(.text) >= ADDR(.boot) + SIZEOF(.boot),
-           ".boot must be allocated before .text (is .multiboot marked \"a\"?)")
 }
+
+/* The Multiboot2 header must sit within the first 32 KiB of the ELF *file*.
+ * That only holds while .boot is allocated into the first PT_LOAD segment ahead
+ * of .text — if the .multiboot input section ever loses its SHF_ALLOC flag the
+ * linker silently orphans it to the end of the file and GRUB then reports
+ * 'no multiboot header found'. Fail the build instead of shipping that. */
+ASSERT(ADDR(.text) >= ADDR(.boot) + SIZEOF(.boot),
+       "multiboot header is not allocated ahead of .text - see boot.S")
