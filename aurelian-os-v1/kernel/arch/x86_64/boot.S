@@ -31,7 +31,13 @@
     /* ------------------------------------------------------------------ */
     /* Multiboot2 header                                                  */
     /* ------------------------------------------------------------------ */
-    .section .multiboot
+    /* "a" (SHF_ALLOC) is essential: without it the linker treats this as a
+     * non-allocatable section, leaves it out of the PT_LOAD segment and emits
+     * it at the *end* of the ELF file next to the debug sections. Multiboot2
+     * requires the header within the first 32 KiB of the file, so the kernel
+     * then fails to boot with "no multiboot header found" as soon as the image
+     * grows past that. See the ASSERT in linker.ld. */
+    .section .multiboot, "a"
     .align 8
 mb2_header:
     .long   MB2_MAGIC
