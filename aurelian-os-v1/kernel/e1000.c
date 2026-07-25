@@ -259,8 +259,7 @@ int e1000_init(void)
     serial_write("[e1000] tctl "); serial_write_hex(rd(REG_TCTL));
     serial_write(" rctl "); serial_write_hex(rd(REG_RCTL));
     serial_write(" status "); serial_write_hex(rd(REG_STATUS));
-    serial_write("
-");
+    serial_write("\n");
 
     serial_write("[e1000] ready, link ");
     serial_write(st.link_up ? "up\n" : "down (negotiating)\n");

@@ -49,9 +49,12 @@ static inline uint32_t shade(uint32_t c, int amt)
     int r = (int)((c >> 16) & 0xFF) + amt;
     int g = (int)((c >> 8) & 0xFF) + amt;
     int b = (int)(c & 0xFF) + amt;
-    if (r < 0) r = 0; if (r > 255) r = 255;
-    if (g < 0) g = 0; if (g > 255) g = 255;
-    if (b < 0) b = 0; if (b > 255) b = 255;
+    if (r < 0) r = 0;
+    if (r > 255) r = 255;
+    if (g < 0) g = 0;
+    if (g > 255) g = 255;
+    if (b < 0) b = 0;
+    if (b > 255) b = 255;
     return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 

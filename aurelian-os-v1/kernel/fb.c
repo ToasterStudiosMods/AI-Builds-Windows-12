@@ -378,8 +378,10 @@ void fb_draw_background(void)
 uint32_t fb_mica_at(int x, int y)
 {
     if (!g_ready) return 0;
-    if (x < 0) x = 0; if (x >= (int)g_fb.width)  x = (int)g_fb.width - 1;
-    if (y < 0) y = 0; if (y >= (int)g_fb.height) y = (int)g_fb.height - 1;
+    if (x < 0) x = 0;
+    if (x >= (int)g_fb.width)  x = (int)g_fb.width  - 1;
+    if (y < 0) y = 0;
+    if (y >= (int)g_fb.height) y = (int)g_fb.height - 1;
     return g_blur[(uint32_t)g_my[y] * BLUR_W + g_mx[x]];
 }
 
