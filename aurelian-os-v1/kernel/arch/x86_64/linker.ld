@@ -69,6 +69,12 @@ SECTIONS
         *(.bss.*)
     } :data
 
+    /* End of the loaded image. The kernel bump-allocates its large frame
+     * buffers above this (see kernel.c), so they never bloat the ELF's memsz
+     * — GRUB then only has to place a ~1 MiB kernel plus the boot modules. */
+    . = ALIGN(0x1000);
+    _kernel_end = .;
+
     /* Discard junk we don't need in a freestanding kernel. */
     /DISCARD/ :
     {
@@ -76,4 +82,13 @@ SECTIONS
         *(.eh_frame)
         *(.note .note.*)
     }
+
 }
+
+/* The Multiboot2 header must sit within the first 32 KiB of the ELF *file*.
+ * That only holds while .boot is allocated into the first PT_LOAD segment ahead
+ * of .text — if the .multiboot input section ever loses its SHF_ALLOC flag the
+ * linker silently orphans it to the end of the file and GRUB then reports
+ * 'no multiboot header found'. Fail the build instead of shipping that. */
+ASSERT(ADDR(.text) >= ADDR(.boot) + SIZEOF(.boot),
+       "multiboot header is not allocated ahead of .text - see boot.S")

@@ -2,157 +2,231 @@
  * Aurelian OS — Aurelion kernel
  * kernel.c — C entry point (kmain)
  *
- * Called from boot.S after the Multiboot2 loader jumps to `_start`. The mbi2
- * info pointer is passed as the first argument. v1 prints a boot banner and
- * basic boot info to the VGA text console, then halts. This is the
- * deliberately minimal, genuinely-bootable baseline of the Aurelion kernel.
+ * Boots from a Multiboot2 loader (GRUB), validates the environment, brings up
+ * the GDT + interrupts + PS/2 drivers, then hands control to the Luma Shell.
+ * Falls back to a VGA text banner if no usable framebuffer is present.
  * ==========================================================================*/
 
 #include "kernel.h"
 #include "vga.h"
 #include "string.h"
 #include "gdt.h"
+#include "fb.h"
+#include "serial.h"
+#include "interrupts.h"
+#include "timer.h"
+#include "keyboard.h"
+#include "mouse.h"
+#include "shell.h"
 #include <stdarg.h>
 
 /* ------------------------------------------------------------------ */
-/* Multiboot2 info structure (subset). See spec at multiboot2.org.    */
+/* Multiboot2 info structures (subset). See spec at multiboot2.org.   */
 /* ------------------------------------------------------------------ */
-struct mbi2_tag {
-    uint32_t type;
-    uint32_t size;
-};
+struct mbi2_tag { uint32_t type; uint32_t size; };
+
+struct mbi2_bootloader_name { uint32_t type; uint32_t size; char string[]; };
 
 struct mbi2_basic_meminfo {
-    uint32_t type;     /* = 4 */
-    uint32_t size;
-    uint32_t mem_lower; /* in KiB */
-    uint32_t mem_upper; /* in KiB */
+    uint32_t type; uint32_t size;
+    uint32_t mem_lower; uint32_t mem_upper;
 };
 
-struct mbi2_bootloader_name {
-    uint32_t type;     /* = 2 */
-    uint32_t size;
-    char     string[]; /* NUL-terminated, padded */
+struct mbi2_framebuffer {
+    uint32_t type; uint32_t size;
+    uint64_t addr;
+    uint32_t pitch;
+    uint32_t width;
+    uint32_t height;
+    uint8_t  bpp;
+    uint8_t  fb_type;
+    uint16_t reserved;
+};
+
+struct mbi2_module {
+    uint32_t type; uint32_t size;       /* type = 3 */
+    uint32_t mod_start;
+    uint32_t mod_end;
+    char     string[];
+};
+
+struct mbi2_mmap {
+    uint32_t type; uint32_t size;       /* type = 6 */
+    uint32_t entry_size;
+    uint32_t entry_version;
+    /* entries follow */
+};
+
+struct mbi2_mmap_entry {
+    uint64_t base;
+    uint64_t len;
+    uint32_t mem_type;                  /* 1 = available */
+    uint32_t reserved;
 };
 
 /* ------------------------------------------------------------------ */
-/* Console helpers                                                    */
+/* VGA text console helpers (fallback path)                           */
 /* ------------------------------------------------------------------ */
-void kprint(const char *s)        { vga_puts(s); }
-void kprintln(const char *s)      { vga_puts(s); vga_putc('\n'); }
+void kprint(const char *s)   { vga_puts(s); }
+void kprintln(const char *s) { vga_puts(s); vga_putc('\n'); }
 
-/* Tiny printf: supports %s, %d, %u, %x, %c. No width/flags. */
 void kprintf(const char *fmt, ...)
 {
-    va_list ap;
-    va_start(ap, fmt);
-
+    va_list ap; va_start(ap, fmt);
     for (const char *p = fmt; *p; p++) {
         if (*p != '%') { vga_putc(*p); continue; }
         p++;
         switch (*p) {
         case 's': vga_puts(va_arg(ap, const char *)); break;
-        case 'd': {
-            char buf[12];
-            int v = va_arg(ap, int);
-            if (v < 0) { vga_putc('-'); v = -v; }
-            vga_puts(uitoa((uint32_t)v, buf, 10));
-            break;
-        }
-        case 'u': {
-            char buf[12];
-            vga_puts(uitoa(va_arg(ap, unsigned), buf, 10));
-            break;
-        }
-        case 'x': {
-            char buf[12];
-            vga_puts(uitoa(va_arg(ap, unsigned), buf, 16));
-            break;
-        }
+        case 'u': { char b[12]; vga_puts(uitoa(va_arg(ap, unsigned), b, 10)); break; }
+        case 'x': { char b[12]; vga_puts(uitoa(va_arg(ap, unsigned), b, 16)); break; }
         case 'c': vga_putc((char)va_arg(ap, int)); break;
         case '%': vga_putc('%'); break;
-        default: vga_putc('%'); vga_putc(*p); break;
+        default:  vga_putc('%'); vga_putc(*p); break;
         }
     }
     va_end(ap);
 }
 
 /* ------------------------------------------------------------------ */
-/* Banner                                                             */
+/* Multiboot2 parse                                                   */
 /* ------------------------------------------------------------------ */
-static void print_banner(void)
+#define MAX_WP 12
+struct boot_facts {
+    const char *loader;
+    uint32_t    mem_upper_kib;
+    int         have_fb;
+    struct fb_info fb;
+    int         nwp;
+    uint64_t    wp_addr[MAX_WP];
+    uint32_t    wp_size[MAX_WP];
+    const struct mbi2_mmap *mmap;       /* memory map tag, if provided */
+    uint64_t    mod_top;                /* highest byte used by any module */
+};
+
+static void parse_mbi2(uint64_t mbi2_info, struct boot_facts *out)
 {
-    vga_set_color(vga_entry_color(VGA_YELLOW, VGA_BLACK));
-    vga_puts(
-        "                                                                   \n"
-        "          ___                    ____                              \n"
-        "         / _ |  ____  ____ _    / __ \\____  ____  _______  __     \n"
-        "        / __ | / __ \\/ __ `/   / /_/ / __ \\/ __ \\/ ___/ / / /    \n"
-        "       /_/ |_|/ /_/ / /_/ /   / _, _/ /_/ / / / / /__/ /_/ /       \n"
-        "                \\___/\\__,_/   /_/ |_|\\____/_/ /_/\\___/\\__, /      \n"
-        "                                                   /____/        \n"
-        "                                                                   \n");
-    vga_set_color(vga_entry_color(VGA_LIGHT_GREEN, VGA_BLACK));
-    vga_puts("        Aurelian OS  ");
-    vga_set_color(vga_entry_color(VGA_LIGHT_GREY, VGA_BLACK));
-    vga_puts("· codename \"");
-    vga_puts(AURELIAN_CODENAME);
-    vga_puts("\"  · kernel ");
-    vga_puts(AURELION_KERNEL);
-    vga_puts("  · v");
-    vga_puts(AURELIAN_VERSION);
-    vga_putc('\n');
-    vga_set_color(vga_entry_color(VGA_DARK_GREY, VGA_BLACK));
-    vga_puts(
-        "        -------------------------------------------------------------\n");
-    vga_set_color(vga_entry_color(VGA_LIGHT_GREY, VGA_BLACK));
+    out->loader = "unknown";
+    out->mem_upper_kib = 0;
+    out->have_fb = 0;
+    out->nwp = 0;
+    out->mmap = 0;
+    out->mod_top = 0;
+
+    const uint8_t *ptr = (const uint8_t *)(uintptr_t)mbi2_info;
+    uint32_t total = *(const uint32_t *)ptr;
+    const struct mbi2_tag *tag = (const struct mbi2_tag *)(ptr + 8);
+
+    while ((const uint8_t *)tag < ptr + total && tag->type != 0) {
+        switch (tag->type) {
+        case 2:
+            out->loader = ((const struct mbi2_bootloader_name *)tag)->string;
+            break;
+        case 4:
+            out->mem_upper_kib = ((const struct mbi2_basic_meminfo *)tag)->mem_upper;
+            break;
+        case 8: {
+            const struct mbi2_framebuffer *f = (const struct mbi2_framebuffer *)tag;
+            out->fb.addr   = f->addr;
+            out->fb.pitch  = f->pitch;
+            out->fb.width  = f->width;
+            out->fb.height = f->height;
+            out->fb.bpp    = f->bpp;
+            out->fb.type   = f->fb_type;
+            out->have_fb   = 1;
+            break;
+        }
+        case 3: {   /* boot modules named wp0, wp1, ... are wallpapers */
+            const struct mbi2_module *m = (const struct mbi2_module *)tag;
+            if (m->mod_end > out->mod_top) out->mod_top = m->mod_end;
+            if (m->string[0] == 'w' && m->string[1] == 'p' && out->nwp < MAX_WP) {
+                out->wp_addr[out->nwp] = m->mod_start;
+                out->wp_size[out->nwp] = m->mod_end - m->mod_start;
+                out->nwp++;
+            }
+            break;
+        }
+        case 6:
+            out->mmap = (const struct mbi2_mmap *)tag;
+            break;
+        default: break;
+        }
+        uint32_t sz = (tag->size + 7) & ~7u;
+        tag = (const struct mbi2_tag *)((const uint8_t *)tag + sz);
+    }
 }
 
 /* ------------------------------------------------------------------ */
-/* Walk the mbi2 tag list for basic info we care about.               */
+/* VGA text fallback (no usable framebuffer)                          */
 /* ------------------------------------------------------------------ */
-static void print_boot_info(uint64_t mbi2_info)
+static void text_fallback(const struct boot_facts *bf)
 {
-    const uint8_t *ptr = (const uint8_t *)mbi2_info;
-    /* first 8 bytes: total size (u32) + reserved (u32) */
-    uint32_t total = *(const uint32_t *)ptr;
-
-    const struct mbi2_tag *tag =
-        (const struct mbi2_tag *)(ptr + 8);
-
-    const char *loader = "unknown";
-    uint32_t mem_lower = 0, mem_upper = 0;
-    int have_mem = 0;
-
-    while ((const uint8_t *)tag < ptr + total) {
-        switch (tag->type) {
-        case 2: /* bootloader name */
-            loader = ((const struct mbi2_bootloader_name *)tag)->string;
-            break;
-        case 4: { /* basic meminfo */
-            const struct mbi2_basic_meminfo *m =
-                (const struct mbi2_basic_meminfo *)tag;
-            mem_lower = m->mem_lower;
-            mem_upper = m->mem_upper;
-            have_mem = 1;
-            break;
-        }
-        default:
-            break;
-        }
-        /* tags are 8-byte aligned */
-        uint32_t sz = (tag->size + 7) & ~((uint32_t)7);
-        tag = (const struct mbi2_tag *)((const uint8_t *)tag + sz);
-    }
-
-    kprintf("  bootloader : %s\n", loader);
-    kprintf("  mbi2 size  : %u bytes\n", total);
-    if (have_mem) {
-        kprintf("  mem lower  : %u KiB\n", mem_lower);
-        kprintf("  mem upper  : %u KiB (%u MiB)\n",
-                mem_upper, mem_upper / 1024);
-    }
+    vga_init();
+    vga_set_color(vga_entry_color(VGA_LIGHT_GREEN, VGA_BLACK));
+    kprintln("Aurelian OS  -  Aurelion kernel v1.0.0-dev");
+    vga_set_color(vga_entry_color(VGA_LIGHT_GREY, VGA_BLACK));
     kprintln("");
+    kprintln("[boot] long mode active (x86-64, 4-level paging)");
+    kprintln("[boot] GDT loaded (64-bit, ring 0)");
+    kprintf("  bootloader : %s\n", bf->loader);
+    kprintf("  mem upper  : %u KiB\n", bf->mem_upper_kib);
+    kprintln("");
+    kprintln("No usable linear framebuffer; the Luma Shell needs graphics mode.");
+    kprintln("Halting CPU.");
+}
+
+/* ------------------------------------------------------------------ */
+/* Early physical memory arena                                        */
+/*                                                                    */
+/* The compositor needs two full-screen 32-bpp buffers (up to ~8 MiB   */
+/* each at 1920x1080). Putting those in .bss would inflate the kernel  */
+/* image's memsz to ~18 MiB, which — together with the wallpaper boot  */
+/* modules — is more than the loader could place, so the kernel never  */
+/* started. Instead we carve them out of the largest free region the   */
+/* loader reports, above both the kernel image and every module.       */
+/* ------------------------------------------------------------------ */
+extern char _kernel_end[];
+
+static uint64_t arena_ptr, arena_end;
+
+static void arena_init(const struct boot_facts *bf)
+{
+    uint64_t floor = (uint64_t)(uintptr_t)_kernel_end;
+    if (bf->mod_top > floor) floor = bf->mod_top;
+    floor = (floor + 0xFFFFu) & ~0xFFFFull;          /* 64 KiB guard + align  */
+
+    uint64_t best_base = 0, best_len = 0;
+
+    if (bf->mmap) {
+        const uint8_t *e = (const uint8_t *)bf->mmap + sizeof(struct mbi2_mmap);
+        const uint8_t *stop = (const uint8_t *)bf->mmap + bf->mmap->size;
+        uint32_t es = bf->mmap->entry_size ? bf->mmap->entry_size : 24;
+        for (; e + es <= stop; e += es) {
+            const struct mbi2_mmap_entry *m = (const struct mbi2_mmap_entry *)e;
+            if (m->mem_type != 1) continue;                 /* not usable      */
+            uint64_t base = m->base, end = m->base + m->len;
+            if (end > 0x100000000ull) end = 0x100000000ull;  /* identity map    */
+            if (base < floor) base = floor;
+            if (end <= base) continue;
+            if (end - base > best_len) { best_base = base; best_len = end - base; }
+        }
+    }
+    if (best_len == 0) {                    /* no map: trust mem_upper */
+        best_base = floor;
+        uint64_t top = 0x100000ull + (uint64_t)bf->mem_upper_kib * 1024ull;
+        best_len = (top > floor) ? top - floor : 0;
+    }
+    arena_ptr = (best_base + 0xFFFu) & ~0xFFFull;
+    arena_end = best_base + best_len;
+}
+
+static void *arena_alloc(uint64_t bytes)
+{
+    bytes = (bytes + 0xFFFu) & ~0xFFFull;
+    if (arena_ptr + bytes > arena_end) return 0;
+    void *p = (void *)(uintptr_t)arena_ptr;
+    arena_ptr += bytes;
+    return p;
 }
 
 /* ------------------------------------------------------------------ */
@@ -160,19 +234,49 @@ static void print_boot_info(uint64_t mbi2_info)
 /* ------------------------------------------------------------------ */
 void kmain(uint64_t mbi2_info)
 {
-    vga_init();
-    print_banner();
-
-    kprintln("[boot] long mode active (x86-64, 4-level paging)");
-    kprintln("[boot] initializing runtime GDT ...");
+    serial_init();
+    serial_write("\nAurelion kernel v1.0.0-dev\n");
+    serial_write("[boot] long mode active; installing GDT...\n");
     gdt_init();
-    kprintln("[boot] GDT loaded (64-bit, ring 0)");
+    serial_write("[boot] GDT loaded (64-bit, ring 0)\n");
 
-    kprintln("[boot] reading multiboot2 info ...");
-    print_boot_info(mbi2_info);
+    struct boot_facts bf;
+    parse_mbi2(mbi2_info, &bf);
 
-    kprintln("[ok]   Aurelion kernel reached idle loop.");
-    kprintln("");
-    kprintln("v1 baseline reached. Halting CPU.");
-    kprintln("(Scheduler, filesystems, and Luma Shell are v2+ milestones.)");
+    serial_write("[boot] bootloader: "); serial_write(bf.loader); serial_write("\n");
+    if (bf.have_fb) {
+        serial_write("[fb] "); serial_write_u64(bf.fb.width);
+        serial_write("x"); serial_write_u64(bf.fb.height);
+        serial_write("x"); serial_write_u64(bf.fb.bpp);
+        serial_write(" addr="); serial_write_hex(bf.fb.addr); serial_write("\n");
+    }
+
+    /* Carve the compositor's buffers out of free physical memory. */
+    arena_init(&bf);
+    uint64_t px = (uint64_t)bf.fb.width * bf.fb.height;
+    uint32_t *back = 0, *bgbuf = 0;
+    if (bf.have_fb && px) {
+        back  = (uint32_t *)arena_alloc(px * 4);
+        bgbuf = (uint32_t *)arena_alloc(px * 4);
+    }
+    serial_write("[mem] arena "); serial_write_hex(arena_ptr);
+    serial_write(" .. ");         serial_write_hex(arena_end);
+    serial_write(back && bgbuf ? " (buffers ok)\n" : " (ALLOC FAILED)\n");
+
+    if (bf.have_fb && fb_init(&bf.fb, back, bgbuf)) {
+        serial_write("[drv] IDT + PIC + timer + keyboard + mouse...\n");
+        idt_init();
+        timer_init(100);
+        keyboard_init();
+        mouse_init();
+        interrupts_enable();
+        serial_write("[drv] drivers up; starting Luma Shell (");
+        serial_write_u64((uint64_t)bf.nwp); serial_write(" wallpapers).\n");
+        shell_run(bf.nwp, bf.wp_addr, bf.wp_size, bf.mem_upper_kib);  /* no return */
+    } else {
+        serial_write("[fb] no usable framebuffer; VGA text.\n");
+        text_fallback(&bf);
+    }
+
+    for (;;) __asm__ volatile ("hlt");
 }

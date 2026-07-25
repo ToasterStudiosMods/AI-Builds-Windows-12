@@ -31,13 +31,30 @@
     /* ------------------------------------------------------------------ */
     /* Multiboot2 header                                                  */
     /* ------------------------------------------------------------------ */
-    .section .multiboot
+    /* "a" (SHF_ALLOC) is essential: without it the linker treats this as a
+     * non-allocatable section, leaves it out of the PT_LOAD segment and emits
+     * it at the *end* of the ELF file next to the debug sections. Multiboot2
+     * requires the header within the first 32 KiB of the file, so the kernel
+     * then fails to boot with "no multiboot header found" as soon as the image
+     * grows past that. See the ASSERT in linker.ld. */
+    .section .multiboot, "a"
     .align 8
 mb2_header:
     .long   MB2_MAGIC
     .long   MB2_ARCH_I386
     .long   mb2_header_end - mb2_header
     .long   0x100000000 - (MB2_MAGIC + MB2_ARCH_I386 + (mb2_header_end - mb2_header))
+
+    /* framebuffer request tag: ask GRUB for a linear RGB framebuffer.
+     * width/height/depth are preferred values; GRUB picks the closest mode
+     * and reports the actual geometry back in the mbi2 framebuffer tag. */
+    .align 8
+    .short  5                    /* type = framebuffer            */
+    .short  0                    /* flags = 0 (required)          */
+    .long   20                   /* size                          */
+    .long   1024                 /* preferred width               */
+    .long   768                  /* preferred height              */
+    .long   32                   /* preferred bpp                 */
 
     /* end tag */
     .align 8
@@ -47,7 +64,7 @@ mb2_header:
 mb2_header_end:
 
     /* ------------------------------------------------------------------ */
-    /* Page tables (identity-map first 1 GiB with 2 MiB pages)            */
+    /* Page tables (identity-map first 4 GiB with 2 MiB pages)            */
     /* Placed in .bss-low so they live at a known low physical address.   */
     /* ------------------------------------------------------------------ */
     .section .bss.low
@@ -56,7 +73,16 @@ pml4:
     .skip 4096
 pdpt:
     .skip 4096
-pd:
+    /* Four page directories: identity-map the first 4 GiB with 2 MiB pages,
+     * so a linear framebuffer placed high in the physical map (VirtualBox's
+     * VBE LFB sits around 0xE0000000) is reachable by the kernel. */
+pd0:
+    .skip 4096
+pd1:
+    .skip 4096
+pd2:
+    .skip 4096
+pd3:
     .skip 4096
 
     /* 16 KiB bootstrap stack */
@@ -95,12 +121,12 @@ _start:
     ljmp    $0x08, $.1
 .1:
 
-    /* --- Build page tables: identity-map first 1 GiB with 2 MiB pages. --- */
+    /* --- Build page tables: identity-map first 4 GiB with 2 MiB pages. --- */
 
-    /* Zero PML4, PDPT, PD. */
+    /* Zero PML4, PDPT and pd0..pd3 (6 pages x 1024 dwords = 6144). */
     movl    $pml4, %edi
     xorl    %eax, %eax
-    movl    $3072, %ecx          /* 3 pages x 1024 dwords = 3072 */
+    movl    $6144, %ecx
     rep     stosl
 
     /* PML4[0] -> PDPT (present | writable). */
@@ -108,18 +134,30 @@ _start:
     orl     $0x003, %eax
     movl    %eax, (pml4)
 
-    /* PDPT[0] -> PD (present | writable). */
-    movl    $pd, %eax
+    /* PDPT[0..3] -> pd0..pd3 (each covers 1 GiB). */
+    movl    $pd0, %eax
     orl     $0x003, %eax
     movl    %eax, (pdpt)
+    movl    $pd1, %eax
+    orl     $0x003, %eax
+    movl    %eax, (pdpt + 8)
+    movl    $pd2, %eax
+    orl     $0x003, %eax
+    movl    %eax, (pdpt + 16)
+    movl    $pd3, %eax
+    orl     $0x003, %eax
+    movl    %eax, (pdpt + 24)
 
-    /* PD[0..511] -> 512 x 2 MiB pages = 1 GiB (present | writable | huge). */
-    movl    $pd, %edi
-    movl    $0x00000083, %eax    /* addr 0 | present | writable | huge (PS) */
-    movl    $512, %ecx
+    /* Fill pd0..pd3 as one contiguous run of 2048 entries: identity-map the
+     * first 4 GiB with 2 MiB pages. Entry = phys | present | writable | huge.
+     * Stride is 2 MiB (0x200000); phys stays < 4 GiB so the high dword (already
+     * zeroed above) remains 0. */
+    movl    $pd0, %edi
+    movl    $0x00000083, %eax    /* phys 0 | present | writable | huge (PS) */
+    movl    $2048, %ecx
 .fill_pd:
     movl    %eax, (%edi)
-    addl    $0x02000000, %eax    /* next 2 MiB — high 32 bits stay 0 (< 4 GiB) */
+    addl    $0x00200000, %eax    /* next 2 MiB */
     addl    $8, %edi
     decl    %ecx
     jnz     .fill_pd
