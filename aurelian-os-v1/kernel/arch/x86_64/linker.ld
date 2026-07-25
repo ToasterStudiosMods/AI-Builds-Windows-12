@@ -69,6 +69,12 @@ SECTIONS
         *(.bss.*)
     } :data
 
+    /* End of the loaded image. The kernel bump-allocates its large frame
+     * buffers above this (see kernel.c), so they never bloat the ELF's memsz
+     * — GRUB then only has to place a ~1 MiB kernel plus the boot modules. */
+    . = ALIGN(0x1000);
+    _kernel_end = .;
+
     /* Discard junk we don't need in a freestanding kernel. */
     /DISCARD/ :
     {

@@ -49,15 +49,20 @@ else
     rm -f "$ISODIR/boot/.pix"
 fi
 
-# generate grub.cfg with the wallpaper module lines
+# Generate grub.cfg with the wallpaper module lines. The echo lines are boot
+# progress markers: if a load ever fails, GRUB stops with its error right after
+# the last marker printed, which makes the failure obvious on a screenshot.
 {
     echo "set timeout=3"
     echo "set default=0"
     echo "insmod all_video"
     echo "set gfxpayload=keep"
     echo 'menuentry "Aurelian OS 1.0.0-dev (Luma)" {'
+    echo '  echo "Loading Aurelion kernel..."'
     echo "  multiboot2 /boot/aurelion.elf"
+    echo '  echo "Loading wallpapers..."'
     cat "$LINES"
+    echo '  echo "Starting Aurelian OS."'
     echo "  boot"
     echo "}"
 } > "$ISODIR/boot/grub/grub.cfg"

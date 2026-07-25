@@ -55,7 +55,9 @@ static inline uint32_t shade(uint32_t c, int amt)
     return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 
-int  fb_init(const struct fb_info *info, uint32_t *backbuffer);
+/* `backbuffer` and `bgbuffer` must each hold width*height uint32 pixels; the
+ * kernel allocates them from free physical memory rather than .bss. */
+int  fb_init(const struct fb_info *info, uint32_t *backbuffer, uint32_t *bgbuffer);
 int  fb_ready(void);
 int  fb_width(void);
 int  fb_height(void);

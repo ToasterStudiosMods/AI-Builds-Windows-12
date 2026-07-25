@@ -50,6 +50,20 @@ struct mbi2_module {
     char     string[];
 };
 
+struct mbi2_mmap {
+    uint32_t type; uint32_t size;       /* type = 6 */
+    uint32_t entry_size;
+    uint32_t entry_version;
+    /* entries follow */
+};
+
+struct mbi2_mmap_entry {
+    uint64_t base;
+    uint64_t len;
+    uint32_t mem_type;                  /* 1 = available */
+    uint32_t reserved;
+};
+
 /* ------------------------------------------------------------------ */
 /* VGA text console helpers (fallback path)                           */
 /* ------------------------------------------------------------------ */
@@ -86,6 +100,8 @@ struct boot_facts {
     int         nwp;
     uint64_t    wp_addr[MAX_WP];
     uint32_t    wp_size[MAX_WP];
+    const struct mbi2_mmap *mmap;       /* memory map tag, if provided */
+    uint64_t    mod_top;                /* highest byte used by any module */
 };
 
 static void parse_mbi2(uint64_t mbi2_info, struct boot_facts *out)
@@ -94,6 +110,8 @@ static void parse_mbi2(uint64_t mbi2_info, struct boot_facts *out)
     out->mem_upper_kib = 0;
     out->have_fb = 0;
     out->nwp = 0;
+    out->mmap = 0;
+    out->mod_top = 0;
 
     const uint8_t *ptr = (const uint8_t *)(uintptr_t)mbi2_info;
     uint32_t total = *(const uint32_t *)ptr;
@@ -120,6 +138,7 @@ static void parse_mbi2(uint64_t mbi2_info, struct boot_facts *out)
         }
         case 3: {   /* boot modules named wp0, wp1, ... are wallpapers */
             const struct mbi2_module *m = (const struct mbi2_module *)tag;
+            if (m->mod_end > out->mod_top) out->mod_top = m->mod_end;
             if (m->string[0] == 'w' && m->string[1] == 'p' && out->nwp < MAX_WP) {
                 out->wp_addr[out->nwp] = m->mod_start;
                 out->wp_size[out->nwp] = m->mod_end - m->mod_start;
@@ -127,6 +146,9 @@ static void parse_mbi2(uint64_t mbi2_info, struct boot_facts *out)
             }
             break;
         }
+        case 6:
+            out->mmap = (const struct mbi2_mmap *)tag;
+            break;
         default: break;
         }
         uint32_t sz = (tag->size + 7) & ~7u;
@@ -153,8 +175,59 @@ static void text_fallback(const struct boot_facts *bf)
     kprintln("Halting CPU.");
 }
 
-/* Compositing backbuffer, sized for the largest mode the compositor supports. */
-static uint32_t g_backbuffer[FB_MAX_PX];
+/* ------------------------------------------------------------------ */
+/* Early physical memory arena                                        */
+/*                                                                    */
+/* The compositor needs two full-screen 32-bpp buffers (up to ~8 MiB   */
+/* each at 1920x1080). Putting those in .bss would inflate the kernel  */
+/* image's memsz to ~18 MiB, which — together with the wallpaper boot  */
+/* modules — is more than the loader could place, so the kernel never  */
+/* started. Instead we carve them out of the largest free region the   */
+/* loader reports, above both the kernel image and every module.       */
+/* ------------------------------------------------------------------ */
+extern char _kernel_end[];
+
+static uint64_t arena_ptr, arena_end;
+
+static void arena_init(const struct boot_facts *bf)
+{
+    uint64_t floor = (uint64_t)(uintptr_t)_kernel_end;
+    if (bf->mod_top > floor) floor = bf->mod_top;
+    floor = (floor + 0xFFFFu) & ~0xFFFFull;          /* 64 KiB guard + align  */
+
+    uint64_t best_base = 0, best_len = 0;
+
+    if (bf->mmap) {
+        const uint8_t *e = (const uint8_t *)bf->mmap + sizeof(struct mbi2_mmap);
+        const uint8_t *stop = (const uint8_t *)bf->mmap + bf->mmap->size;
+        uint32_t es = bf->mmap->entry_size ? bf->mmap->entry_size : 24;
+        for (; e + es <= stop; e += es) {
+            const struct mbi2_mmap_entry *m = (const struct mbi2_mmap_entry *)e;
+            if (m->mem_type != 1) continue;                 /* not usable      */
+            uint64_t base = m->base, end = m->base + m->len;
+            if (end > 0x100000000ull) end = 0x100000000ull;  /* identity map    */
+            if (base < floor) base = floor;
+            if (end <= base) continue;
+            if (end - base > best_len) { best_base = base; best_len = end - base; }
+        }
+    }
+    if (best_len == 0) {                    /* no map: trust mem_upper */
+        best_base = floor;
+        uint64_t top = 0x100000ull + (uint64_t)bf->mem_upper_kib * 1024ull;
+        best_len = (top > floor) ? top - floor : 0;
+    }
+    arena_ptr = (best_base + 0xFFFu) & ~0xFFFull;
+    arena_end = best_base + best_len;
+}
+
+static void *arena_alloc(uint64_t bytes)
+{
+    bytes = (bytes + 0xFFFu) & ~0xFFFull;
+    if (arena_ptr + bytes > arena_end) return 0;
+    void *p = (void *)(uintptr_t)arena_ptr;
+    arena_ptr += bytes;
+    return p;
+}
 
 /* ------------------------------------------------------------------ */
 /* Entry point                                                        */
@@ -178,7 +251,19 @@ void kmain(uint64_t mbi2_info)
         serial_write(" addr="); serial_write_hex(bf.fb.addr); serial_write("\n");
     }
 
-    if (bf.have_fb && fb_init(&bf.fb, g_backbuffer)) {
+    /* Carve the compositor's buffers out of free physical memory. */
+    arena_init(&bf);
+    uint64_t px = (uint64_t)bf.fb.width * bf.fb.height;
+    uint32_t *back = 0, *bgbuf = 0;
+    if (bf.have_fb && px) {
+        back  = (uint32_t *)arena_alloc(px * 4);
+        bgbuf = (uint32_t *)arena_alloc(px * 4);
+    }
+    serial_write("[mem] arena "); serial_write_hex(arena_ptr);
+    serial_write(" .. ");         serial_write_hex(arena_end);
+    serial_write(back && bgbuf ? " (buffers ok)\n" : " (ALLOC FAILED)\n");
+
+    if (bf.have_fb && fb_init(&bf.fb, back, bgbuf)) {
         serial_write("[drv] IDT + PIC + timer + keyboard + mouse...\n");
         idt_init();
         timer_init(100);

@@ -13,11 +13,9 @@
 #include "string.h"
 
 static struct fb_info g_fb;
-static uint32_t      *g_back;
+static uint32_t      *g_back;   /* compositing target  */
+static uint32_t      *g_bg;     /* upscaled wallpaper  */
 static uint8_t        g_ready;
-
-/* Full-resolution background (wallpaper) cache. */
-static uint32_t g_bg[FB_MAX_PX];
 
 /* Low-resolution blurred wallpaper: the Mica base. Sampling a small, blurred
  * image is equivalent to a wide-radius blur but costs almost nothing. */
@@ -42,16 +40,17 @@ static uint32_t isqrt32(uint32_t v)
     return x;
 }
 
-int fb_init(const struct fb_info *info, uint32_t *backbuffer)
+int fb_init(const struct fb_info *info, uint32_t *backbuffer, uint32_t *bgbuffer)
 {
     g_fb   = *info;
     g_back = backbuffer;
+    g_bg   = bgbuffer;
 
     uint64_t end = info->addr + (uint64_t)info->height * info->pitch;
     g_ready = (info->type == 1 && (info->bpp == 32 || info->bpp == 24) &&
                info->addr != 0 && info->width > 0 && info->height > 0 &&
                info->width <= FB_MAX_W && info->height <= FB_MAX_H &&
-               end <= 0x100000000ULL && backbuffer != 0);
+               end <= 0x100000000ULL && backbuffer != 0 && bgbuffer != 0);
     if (g_ready) {
         for (uint32_t x = 0; x < g_fb.width; x++)
             g_mx[x] = (uint16_t)(x * BLUR_W / g_fb.width);
