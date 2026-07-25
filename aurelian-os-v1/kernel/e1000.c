@@ -344,13 +344,18 @@ int e1000_send(const void *frame, uint16_t len)
 void e1000_reap(void)
 {
     if (!st.present) return;
-    /* One-shot look at what the card actually left behind, on both rings. */
-    static int shown = 0;
-    if (!shown) {
-        shown = 1;
+    /* Look at what the card left behind on both rings, sampled at the first
+     * reap after a frame has actually gone out and again a little later, so the
+     * snapshot is not taken while sends are still being deferred. */
+    static uint32_t reaps_after_tx = 0;
+    if (st.tx_packets > 0) reaps_after_tx++;
+    if (reaps_after_tx == 1 || reaps_after_tx == 20 || reaps_after_tx == 120) {
+        serial_write("[e1000] sample ");
+        serial_write_u64(reaps_after_tx);
+        serial_write(": ");
         dcache_flush((const void *)&txd[0]);
         dcache_flush((const void *)&rxd[0]);
-        serial_write("[e1000] reap: tdh ");   serial_write_hex(rd(REG_TDH));
+        serial_write("tdh ");                 serial_write_hex(rd(REG_TDH));
         serial_write(" tdt ");                serial_write_hex(rd(REG_TDT));
         serial_write(" tx0.sta ");            serial_write_hex8(txd[0].status);
         serial_write(" tx0.cmd ");            serial_write_hex8(txd[0].cmd);
