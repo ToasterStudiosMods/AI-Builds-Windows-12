@@ -717,7 +717,7 @@ static void draw_settings(int a)
         }
         /* --- network status, straight from the driver --- */
         const struct e1000_state *e = e1000_get();
-        const struct net_state   *n = net_get();
+        const struct net_state   *nst = net_get();
         int ny = oy + h - 74 * S;
         fb_fill(px, ny - 8 * S, pw, 1, T.stroke);
         if (!e->present) {
@@ -738,15 +738,15 @@ static void draw_settings(int a)
             q3 = fb_text(q3, ry, "  rx ", T.fg2, S);
             q3 = fb_num(q3, ry, e->rx_packets, T.fg, S);
             q3 = fb_text(q3, ry, "  arp tx/rx ", T.fg2, S);
-            q3 = fb_num(q3, ry, n->arp_tx, T.fg, S);
+            q3 = fb_num(q3, ry, nst->arp_tx, T.fg, S);
             q3 = fb_text(q3, ry, "/", T.fg2, S);
-            fb_num(q3, ry, n->arp_rx, T.fg, S);
+            fb_num(q3, ry, nst->arp_rx, T.fg, S);
 
             int gy = ny + 34 * S;
-            if (n->gw_resolved) {
+            if (nst->gw_resolved) {
                 int q4 = fb_text(px, gy, "gateway 10.0.2.2 is at ", 0x00059669u, S);
                 for (int i = 0; i < 6; i++) {
-                    q4 = hex8(q4, gy, n->gw_mac[i], T.fg);
+                    q4 = hex8(q4, gy, nst->gw_mac[i], T.fg);
                     if (i < 5) q4 = fb_text(q4, gy, ":", T.fg2, S);
                 }
             } else {

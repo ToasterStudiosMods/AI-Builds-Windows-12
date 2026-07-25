@@ -61,9 +61,13 @@ int sched_spawn(const char *name, void (*entry)(void), uint32_t stack_bytes)
      * 16-byte align the iretq frame so the ABI holds inside the task. */
     uint64_t *sp = (uint64_t *)(stk + stack_bytes);
     sp = (uint64_t *)((uint64_t)sp & ~0xFull);
+    /* Capture the top before pushing: this is what RSP must hold once iretq has
+     * consumed the frame. Reading sp in the same expression that decrements it
+     * would be undefined behaviour, and the value would be wrong besides. */
+    uint64_t stack_top = (uint64_t)(uintptr_t)sp;
 
     *(--sp) = 0x10;                            /* ss     — kernel data      */
-    *(--sp) = (uint64_t)(uintptr_t)sp;         /* rsp    — task's own stack */
+    *(--sp) = stack_top;                       /* rsp    — task's own stack */
     *(--sp) = 0x202;                           /* rflags — IF set           */
     *(--sp) = 0x08;                            /* cs     — kernel code      */
     *(--sp) = (uint64_t)(uintptr_t)entry;      /* rip    — entry point      */
