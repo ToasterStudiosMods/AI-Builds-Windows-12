@@ -997,8 +997,8 @@ static void draw_about(int a)
     fb_text(px, y2, "A from-scratch x86-64 operating system:", T.fg, S); y2 += LH;
     fb_text(px, y2, "own kernel, graphics stack and shell.", T.fg, S);   y2 += LH + 8 * S;
     section(px, y2, "Keyboard");                                          y2 += LH;
-    fb_text(px, y2, "F1-F8  launch apps    Esc  Start", T.fg2, S);        y2 += LH;
-    fb_text(px, y2, "F9  theme   F10  wallpaper", T.fg2, S);              y2 += LH;
+    fb_text(px, y2, "F1-F10  launch apps   Esc  Start", T.fg2, S);       y2 += LH;
+    fb_text(px, y2, "keypad -  theme    keypad +  wallpaper", T.fg2, S);  y2 += LH;
     fb_text(px, y2, "F11 next window       F12  close", T.fg2, S);
 
     (void)w;
@@ -1821,12 +1821,24 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
             } else if (e.type == INPUT_KEY_DOWN) {
                 key_events++;
                 uint8_t k = e.keycode;
-                if (k >= 0x3B && k <= 0x42) {           /* F1..F8 launch apps  */
+                if (k >= 0x3B && k <= 0x44 &&
+                    (int)(k - 0x3B) < APP_COUNT) {       /* F1..F10 launch apps */
                     open_app(k - 0x3B); start_open = 0;
-                } else if (k == 0x43) {                  /* F9  theme          */
-                    dark_mode = !dark_mode; theme_apply();
-                } else if (k == 0x44) {                  /* F10 next wallpaper */
-                    if (wp_count) wallpaper_select((wp_active + 1) % wp_count);
+                } else if (k == 0x4A) {                  /* keypad -  theme    */
+                    dark_mode = !dark_mode;
+                    theme_apply();
+                    if (reg_key_luma() >= 0) {
+                        reg_set_dword(reg_key_luma(), "DarkMode", (uint32_t)dark_mode);
+                        reg_save();
+                    }
+                } else if (k == 0x4E) {                  /* keypad +  wallpaper */
+                    if (wp_count) {
+                        wallpaper_select((wp_active + 1) % wp_count);
+                        if (reg_key_luma() >= 0) {
+                            reg_set_dword(reg_key_luma(), "Wallpaper", (uint32_t)wp_active);
+                            reg_save();
+                        }
+                    }
                 } else if (k == 0x57) {                  /* F11 cycle windows  */
                     if (zn > 1) {
                         int f = zlist[zn - 1];
