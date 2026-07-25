@@ -23,6 +23,8 @@
 #define AHCI_FS_LBA         64
 #define AHCI_FS_SECTORS     48
 #define AHCI_SCRATCH_LBA    (AHCI_FS_LBA + AHCI_FS_SECTORS)
+#define AHCI_REG_LBA        (AHCI_SCRATCH_LBA + 1)
+#define AHCI_REG_SECTORS    32
 
 enum ahci_kind { AHCI_NONE = 0, AHCI_SATA, AHCI_SATAPI, AHCI_OTHER };
 

@@ -22,6 +22,7 @@
 #include "e1000.h"
 #include "net.h"
 #include "ahci.h"
+#include "reg.h"
 #include "serial.h"
 #include "string.h"
 #include <stdint.h>
@@ -82,15 +83,17 @@ static void metrics_init(void)
 /* 3. Apps                                                             */
 /* ================================================================== */
 enum { APP_EXPLORER, APP_NOTEPAD, APP_CALC, APP_CLOCK,
-       APP_PAINT, APP_TERM, APP_SETTINGS, APP_TASKS, APP_ABOUT, APP_COUNT };
+       APP_PAINT, APP_TERM, APP_SETTINGS, APP_TASKS, APP_REGEDIT,
+       APP_ABOUT, APP_COUNT };
 
 static const char *app_title[APP_COUNT] = {
     "File Explorer", "Notepad", "Calculator", "Clock",
-    "Paint", "Terminal", "Settings", "Task Manager", "About Aurelian OS"
+    "Paint", "Terminal", "Settings", "Task Manager", "Registry Editor",
+    "About Aurelian OS"
 };
 static const char *app_short[APP_COUNT] = {
     "Files", "Notepad", "Calc", "Clock", "Paint", "Terminal",
-    "Settings", "Tasks", "About"
+    "Settings", "Tasks", "Registry", "About"
 };
 
 /* anim: 0..256 open progress, eased when drawn. Windows slide up into place
@@ -220,6 +223,16 @@ static void icon(int a, int x, int y, int sz)
         fb_round(x + sz - q,   y + r - half,   q,   nub, 1, gc);
         fb_round(x + q / 2, y + q / 2, sz - q, sz - q, (sz - q) / 2, gc);
         fb_round(x + r - q / 2, y + r - q / 2, q, q, q / 2, T.layer);
+        break;
+    }
+    case APP_REGEDIT: {                                 /* key/value rows */
+        fb_round(x, y, sz, sz, RADS / 2 + 1, 0x00EFF3F8u);
+        fb_round_border(x, y, sz, sz, RADS / 2 + 1, 1, 0x009AA6B4u, 0xFF);
+        for (int r = 0; r < 3; r++) {
+            int ry = y + q / 2 + r * (q * 3 / 4);
+            fb_fill(x + q / 2, ry, q, q / 3, 0x004C6EF5u);
+            fb_fill(x + q * 2, ry, sz - q * 5 / 2, q / 3, 0x00A0AAB8u);
+        }
         break;
     }
     case APP_TASKS: {                                   /* bar chart */
@@ -876,6 +889,102 @@ static void draw_tasks(int a)
     fb_num(p3, sy, churn_fail, churn_fail ? 0x00C42B1Cu : 0x00059669u, S);
 }
 
+/* ---- Registry Editor -------------------------------------------------- */
+static int rg_key = -1;      /* selected key                */
+static int rg_sel;           /* selected value row          */
+
+/* Flatten the key tree into rows so it can be drawn and hit-tested simply. */
+#define RG_ROWS 24
+static int  rg_rowkey[RG_ROWS];
+static int  rg_rowdepth[RG_ROWS];
+static int  rg_nrows;
+
+static void rg_flatten(int key, int depth)
+{
+    if (rg_nrows >= RG_ROWS || depth > 4) return;
+    if (key != reg_root()) {
+        rg_rowkey[rg_nrows]   = key;
+        rg_rowdepth[rg_nrows] = depth;
+        rg_nrows++;
+    }
+    int n = reg_key_child_count(key);
+    for (int i = 0; i < n; i++)
+        rg_flatten(reg_key_child(key, i), depth + (key == reg_root() ? 0 : 1));
+}
+
+static void draw_regedit(int a)
+{
+    int ox = co_x(a), oy = co_y(a), w = co_w(a), h = co_h(a);
+    int tool = 30 * S, side = 190 * S, row = 22 * S;
+
+    if (rg_key < 0) rg_key = reg_key_luma();
+    rg_nrows = 0;
+    rg_flatten(reg_root(), 0);
+
+    /* path bar */
+    char path[96];
+    reg_key_path(rg_key, path, sizeof(path));
+    fb_round(ox + 8 * S, oy + 4 * S, w - 16 * S, 22 * S, RADS, T.layer2);
+    fb_round_border(ox + 8 * S, oy + 4 * S, w - 16 * S, 22 * S, RADS, 1, T.stroke, 0xFF);
+    fb_text(ox + 16 * S, oy + 7 * S, path, T.fg, S);
+
+    /* key tree */
+    fb_fill(ox, oy + tool, side, h - tool, T.layer2);
+    fb_fill(ox + side, oy + tool, 1, h - tool, T.stroke);
+    for (int i = 0; i < rg_nrows; i++) {
+        int ky = oy + tool + 6 * S + i * row;
+        if (ky + row > oy + h) break;
+        int on = (rg_rowkey[i] == rg_key);
+        int hv = in_r(cx, cy, ox + 4 * S, ky, side - 8 * S, row);
+        if (on || hv)
+            fb_round(ox + 4 * S, ky, side - 8 * S, row, RADS,
+                     on ? blend(T.layer2, accent, 0x30) : T.ctrl_hi);
+        if (on) fb_round(ox + 4 * S, ky + row / 4, 3 * S, row / 2, 2, accent);
+        int ind = 14 * S + rg_rowdepth[i] * 12 * S;
+        fb_text(ox + ind, ky + (row - 16 * S) / 2, reg_key_name(rg_rowkey[i]), T.fg, S);
+    }
+
+    /* values */
+    int lx = ox + side + 1, ly = oy + tool, lw = w - side - 1;
+    fb_text(lx + 12 * S, ly + 4 * S, "Name", T.fg2, S);
+    fb_text(lx + lw / 2, ly + 4 * S, "Type", T.fg2, S);
+    fb_text(lx + lw / 2 + 60 * S, ly + 4 * S, "Data", T.fg2, S);
+    fb_fill(lx + 8 * S, ly + 22 * S, lw - 16 * S, 1, T.stroke);
+
+    int n = reg_value_count(rg_key);
+    for (int i = 0; i < n; i++) {
+        int v  = reg_value_at(rg_key, i);
+        int vy = ly + 28 * S + i * row;
+        if (vy + row > oy + h) break;
+        int hv = in_r(cx, cy, lx + 6 * S, vy, lw - 12 * S, row);
+        if (i == rg_sel)
+            fb_round(lx + 6 * S, vy, lw - 12 * S, row, RADS, blend(T.layer, accent, 0x28));
+        else if (hv)
+            fb_round(lx + 6 * S, vy, lw - 12 * S, row, RADS, T.ctrl_hi);
+        int ty = vy + (row - 16 * S) / 2;
+        fb_text(lx + 12 * S, ty, reg_value_name(v), T.fg, S);
+        uint8_t t = reg_value_type(v);
+        fb_text(lx + lw / 2, ty, t == REG_DWORD ? "DWORD" : "SZ", T.fg2, S);
+        int dx = lx + lw / 2 + 60 * S;
+        if (t == REG_DWORD) {
+            uint32_t d = reg_value_dword(v);
+            /* colours read better as hex */
+            int isc = 0;
+            const char *nm = reg_value_name(v);
+            for (int k = 0; nm[k]; k++) if (nm[k] == 'C' && nm[k+1] == 'o') { isc = 1; break; }
+            if (isc) { dx = fb_text(dx, ty, "0x", T.fg2, S); hex16(dx + 0, ty, (uint16_t)(d >> 8), T.fg); }
+            else fb_num(dx, ty, d, T.fg, S);
+        } else {
+            fb_text(dx, ty, reg_value_str(v), T.fg, S);
+        }
+    }
+    if (n == 0) fb_text(lx + 16 * S, ly + 34 * S, "(no values)", T.fg2, S);
+
+    fb_text(ox + 12 * S, oy + h - 18 * S,
+            reg_is_persistent() ? "stored on disk - edits survive a restart"
+                                : "in memory only - no disk attached", T.fg2, S);
+}
+
 static void draw_about(int a)
 {
     int ox = co_x(a), oy = co_y(a), w = co_w(a);
@@ -942,6 +1051,7 @@ static void draw_window(int a, int focused)
     case APP_TERM:     draw_term(a);     break;
     case APP_SETTINGS: draw_settings(a); break;
     case APP_TASKS:    draw_tasks(a);    break;
+    case APP_REGEDIT:  draw_regedit(a);  break;
     default:           draw_about(a);    break;
     }
 
@@ -1338,6 +1448,17 @@ static void app_click(int a, int lx, int ly)
             }
         if (in_r(lx, ly, w - 76 * S, 8 * S, 66 * S, 24 * S)) { paint_clear(); return; }
         paint_stroke(a);
+    } else if (a == APP_REGEDIT) {
+        int tool = 30 * S, side = 190 * S, row = 22 * S;
+        for (int i = 0; i < rg_nrows; i++)
+            if (in_r(lx, ly, 4 * S, tool + 6 * S + i * row, side - 8 * S, row)) {
+                rg_key = rg_rowkey[i]; rg_sel = 0; return;
+            }
+        int n = reg_value_count(rg_key);
+        for (int i = 0; i < n; i++)
+            if (in_r(lx, ly, side + 6 * S, tool + 28 * S + i * row, w - side - 12 * S, row)) {
+                rg_sel = i; return;
+            }
     } else if (a == APP_SETTINGS) {
         int nav = 140 * S;
         for (int i = 0; i < 4; i++)
@@ -1348,12 +1469,22 @@ static void app_click(int a, int lx, int ly)
         int px = nav + PAD, py = PAD, pw = w - nav - 2 * PAD;
         for (int i = 0; i < 8; i++)
             if (in_r(lx, ly, px + i * 34 * S, py + LH + 4 * S, 26 * S, 26 * S)) {
-                accent = ACCENTS[i]; return;
+                accent = ACCENTS[i];
+                if (reg_key_luma() >= 0) {
+                    reg_set_dword(reg_key_luma(), "AccentColour", accent);
+                    reg_save();
+                }
+                return;
             }
         int ty2 = py + LH + 48 * S, sw = 84 * S;
         for (int i = 0; i < 2; i++)
             if (in_r(lx, ly, px + i * (sw + 8 * S), ty2 + LH + 4 * S, sw, 28 * S)) {
-                dark_mode = i; theme_apply(); return;
+                dark_mode = i; theme_apply();
+                if (reg_key_luma() >= 0) {
+                    reg_set_dword(reg_key_luma(), "DarkMode", (uint32_t)dark_mode);
+                    reg_save();
+                }
+                return;
             }
         int wy = ty2 + LH + 44 * S;
         int tw = 76 * S, th = 54 * S, gap = 8 * S;
@@ -1361,7 +1492,12 @@ static void app_click(int a, int lx, int ly)
         for (int k = 0; k < wp_count; k++) {
             int c = k % perrow, r = k / perrow;
             if (in_r(lx, ly, px + c * (tw + gap), wy + LH + 4 * S + r * (th + gap), tw, th)) {
-                wallpaper_select(k); return;
+                wallpaper_select(k);
+                if (reg_key_luma() >= 0) {
+                    reg_set_dword(reg_key_luma(), "Wallpaper", (uint32_t)k);
+                    reg_save();
+                }
+                return;
             }
         }
     }
@@ -1375,6 +1511,29 @@ static int app_keycode(int a, uint8_t k)
         /* 1..4 jump to a Settings page (it has no text fields to conflict) */
         if (k >= 0x02 && k <= 0x05) { set_page = k - 0x02; return 1; }
         return 0;
+    }
+    if (a == APP_REGEDIT) {
+        switch (k) {
+        case 0xC8: {                                /* up: previous key   */
+            for (int i = 1; i < rg_nrows; i++)
+                if (rg_rowkey[i] == rg_key) { rg_key = rg_rowkey[i - 1]; rg_sel = 0; break; }
+            return 1;
+        }
+        case 0xD0: {                                /* down: next key     */
+            for (int i = 0; i < rg_nrows - 1; i++)
+                if (rg_rowkey[i] == rg_key) { rg_key = rg_rowkey[i + 1]; rg_sel = 0; break; }
+            return 1;
+        }
+        case 0xCD:                                  /* right: next value  */
+            if (reg_value_count(rg_key) > 0)
+                rg_sel = (rg_sel + 1) % reg_value_count(rg_key);
+            return 1;
+        case 0xCB:                                  /* left: prev value   */
+            if (reg_value_count(rg_key) > 0)
+                rg_sel = (rg_sel + reg_value_count(rg_key) - 1) % reg_value_count(rg_key);
+            return 1;
+        default: return 0;
+        }
     }
     if (a == APP_EXPLORER) {
         int n = fs_child_count(ex_dir);
@@ -1559,6 +1718,18 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
     metrics_init();
     theme_apply();
     fs_mount();      /* prefer the on-disk tree */
+    reg_mount();
+
+    /* The registry, not the source, decides how the desktop looks. Anything
+     * changed in Settings is written back below, so it survives a restart. */
+    {
+        int lk = reg_key_luma();
+        if (lk >= 0) {
+            accent    = reg_get_dword(lk, "AccentColour", accent);
+            dark_mode = (int)reg_get_dword(lk, "DarkMode", (uint32_t)dark_mode);
+            theme_apply();
+        }
+    }
     g_mem_kib = mem_kib;
     tb_btn = 44;
 
@@ -1577,7 +1748,14 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
             }
         }
     }
-    if (wp_count > 0) wallpaper_select(0);
+    if (wp_count > 0) {
+        int want = 0;
+        if (reg_key_luma() >= 0)
+            want = (int)reg_get_dword(reg_key_luma(), "Wallpaper", 0);
+        if (want < 0 || want >= wp_count) want = 0;
+        wp_active = -1;
+        wallpaper_select(want);
+    }
     else              fb_set_wallpaper_gradient(0x00243B7Au, 0x000C1024u);
 
     /* window sizes (scaled, clamped to the screen) */
@@ -1589,6 +1767,7 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
     wins[APP_TERM]     = (struct win){ 0,0, 540*S, 320*S, 0,0 };
     wins[APP_SETTINGS] = (struct win){ 0,0, 620*S, 480*S, 0,0 };
     wins[APP_TASKS]    = (struct win){ 0,0, 520*S, 400*S, 0,0 };
+    wins[APP_REGEDIT]  = (struct win){ 0,0, 620*S, 400*S, 0,0 };
     wins[APP_ABOUT]    = (struct win){ 0,0, 430*S, 330*S, 0,0 };
     for (int i = 0; i < APP_COUNT; i++) {
         if (wins[i].w > SW - 20 * S) wins[i].w = SW - 20 * S;
