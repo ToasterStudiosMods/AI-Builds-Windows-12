@@ -87,6 +87,7 @@ static volatile struct rx_desc *rxd;
 static volatile struct tx_desc *txd;
 static uint8_t *rxbuf, *txbuf;
 static uint32_t rx_next, tx_next;
+static uint8_t  tx_pending[NTX];   /* 1 = handed to the card, not yet reaped */
 
 static inline void io_pause(void) { __asm__ volatile ("pause" ::: "memory"); }
 
@@ -296,8 +297,7 @@ int e1000_send(const void *frame, uint16_t len)
     }
 
     volatile struct tx_desc *t = &txd[tx_next];
-    dcache_flush((const void *)t);
-    if (t->cmd && !(t->status & TXD_STAT_DD)) return 0;   /* slot still in flight */
+    if (tx_pending[tx_next]) return 0;                 /* slot still in flight */
 
     memcpy(txbuf + (uint64_t)tx_next * BUFSZ, frame, len);
     t->length = len;
@@ -308,6 +308,7 @@ int e1000_send(const void *frame, uint16_t len)
     dcache_flush((const void *)t);
     mem_fence();                                       /* descriptor before doorbell */
 
+    tx_pending[tx_next] = 1;
     tx_next = (tx_next + 1) % NTX;
     wr(REG_TDT, tx_next);                              /* hand it to the card */
     st.tx_packets++;
@@ -343,12 +344,29 @@ int e1000_send(const void *frame, uint16_t len)
 void e1000_reap(void)
 {
     if (!st.present) return;
+    /* One-shot look at what the card actually left behind, on both rings. */
+    static int shown = 0;
+    if (!shown) {
+        shown = 1;
+        dcache_flush((const void *)&txd[0]);
+        dcache_flush((const void *)&rxd[0]);
+        serial_write("[e1000] reap: tdh ");   serial_write_hex(rd(REG_TDH));
+        serial_write(" tdt ");                serial_write_hex(rd(REG_TDT));
+        serial_write(" tx0.sta ");            serial_write_hex8(txd[0].status);
+        serial_write(" tx0.cmd ");            serial_write_hex8(txd[0].cmd);
+        serial_write("\n[e1000] reap: rdh "); serial_write_hex(rd(REG_RDH));
+        serial_write(" rdt ");                serial_write_hex(rd(REG_RDT));
+        serial_write(" rx0.sta ");            serial_write_hex8(rxd[0].status);
+        serial_write(" rx0.len ");            serial_write_hex(rxd[0].length);
+        serial_write("\n");
+    }
+
     for (uint32_t i = 0; i < NTX; i++) {
+        if (!tx_pending[i]) continue;
         volatile struct tx_desc *t = &txd[i];
-        if (!t->cmd) continue;                        /* never submitted */
         dcache_flush((const void *)t);
         if (t->status & TXD_STAT_DD) {
-            t->cmd = 0;                               /* accounted for */
+            tx_pending[i] = 0;
             st.tx_done++;
         }
     }
