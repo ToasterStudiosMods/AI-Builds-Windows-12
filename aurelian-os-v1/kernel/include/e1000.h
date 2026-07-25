@@ -18,7 +18,7 @@ struct e1000_state {
     int      link_up;
     uint64_t mmio;              /* register window (physical == virtual) */
     uint8_t  mac[6];
-    uint32_t tx_packets, tx_done, rx_packets, rx_errors;
+    uint32_t tx_packets, tx_done, tx_deferred, rx_packets, rx_errors;
     uint16_t last_rx_len;
 };
 
@@ -30,6 +30,8 @@ int  e1000_send(const void *frame, uint16_t len);
 uint16_t e1000_receive(const uint8_t **buf);
 /* Refresh the cached link state. */
 void e1000_refresh_link(void);
+/* Poll until the link comes up (or `tries` attempts elapse). */
+int  e1000_wait_link(int tries);
 
 const struct e1000_state *e1000_get(void);
 

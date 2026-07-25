@@ -276,6 +276,15 @@ int e1000_send(const void *frame, uint16_t len)
 {
     if (!st.present || len == 0 || len > BUFSZ) return 0;
 
+    /* A MAC will not transmit with the link down: the controller simply leaves
+     * TDH where it is and the descriptor is never retired. Queueing anyway just
+     * burns the whole ring before negotiation finishes, which is exactly what
+     * happened here — 16 queued, 0 completed, TDH stuck at 0. */
+    if (!st.link_up) {
+        e1000_refresh_link();
+        if (!st.link_up) { st.tx_deferred++; return 0; }
+    }
+
     volatile struct tx_desc *t = &txd[tx_next];
     if (!(t->status & TXD_STAT_DD)) return 0;          /* ring full */
 
@@ -336,6 +345,17 @@ uint16_t e1000_receive(const uint8_t **buf)
     wr(REG_RDT, rx_next);
     rx_next = (rx_next + 1) % NRX;
     return len;
+}
+
+/* Poll for link up, giving negotiation time to finish. Returns 1 if up. */
+int e1000_wait_link(int tries)
+{
+    for (int i = 0; i < tries; i++) {
+        e1000_refresh_link();
+        if (st.link_up) return 1;
+        for (volatile int d = 0; d < 200000; d++) { }
+    }
+    return st.link_up;
 }
 
 const struct e1000_state *e1000_get(void) { return &st; }

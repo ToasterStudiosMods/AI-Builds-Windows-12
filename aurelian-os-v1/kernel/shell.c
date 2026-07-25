@@ -771,6 +771,10 @@ static void draw_settings(int a)
             q3 = fb_num(q3, ry, e->tx_done, e->tx_done ? 0x00059669u : T.fg, S);
             q3 = fb_text(q3, ry, "  rx ", T.fg2, S);
             q3 = fb_num(q3, ry, e->rx_packets, T.fg, S);
+            if (e->tx_deferred) {
+                q3 = fb_text(q3, ry, "  defer ", T.fg2, S);
+                q3 = fb_num(q3, ry, e->tx_deferred, T.fg2, S);
+            }
             q3 = fb_text(q3, ry, "  arp tx/rx ", T.fg2, S);
             q3 = fb_num(q3, ry, nst->arp_tx, T.fg, S);
             q3 = fb_text(q3, ry, "/", T.fg2, S);
@@ -1513,8 +1517,12 @@ static void task_heap_churn(void)
  * the receive ring. Polled from its own thread rather than an IRQ. */
 static void task_net(void)
 {
-    sched_sleep(50);                       /* let the link negotiate */
-    e1000_refresh_link();
+    /* Wait for the link before sending anything: transmitting into a link that
+     * is still negotiating leaves the descriptors unretired. */
+    for (int i = 0; i < 60 && !e1000_get()->link_up; i++) {
+        e1000_refresh_link();
+        sched_sleep(10);                   /* 100 ms per attempt, up to ~6 s */
+    }
     for (;;) {
         const struct net_state *n = net_get();
         if (!n->gw_resolved && (n->arp_tx == 0 || (timer_ticks() % 200) < 10)) {
