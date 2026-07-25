@@ -283,7 +283,7 @@ void kmain(uint64_t mbi2_info)
         heap_init(4 * 1024 * 1024);
         sched_init("luma-shell");
         pci_scan();
-        if (e1000_init()) net_init();
+        if (nic_init()) net_init();
         ahci_init();
         interrupts_enable();
         serial_write("[drv] drivers up; starting Luma Shell (");

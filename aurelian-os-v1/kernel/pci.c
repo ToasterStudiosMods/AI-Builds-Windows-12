@@ -13,6 +13,8 @@
 static struct pci_dev devs[PCI_MAX_DEVICES];
 static int ndev;
 
+static void cfg_write32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off, uint32_t val);
+
 static uint32_t cfg_read32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off)
 {
     uint32_t addr = (1u << 31) | ((uint32_t)bus << 16) | ((uint32_t)slot << 11)
@@ -171,4 +173,32 @@ const char *pci_device_name(uint16_t v, uint16_t d)
         }
     }
     return 0;
+}
+
+static void cfg_write32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off, uint32_t val)
+{
+    uint32_t addr = (uint32_t)((bus << 16) | (slot << 11) | (func << 8) |
+                               (off & 0xFC) | 0x80000000u);
+    outl(CONFIG_ADDR, addr);
+    outl(CONFIG_DATA, val);
+}
+
+/* Switch a device on. Bit 2 of the command register is Bus Master Enable, and
+ * without it the device is not permitted to touch memory at all — every DMA
+ * driver needs this before it programs a single descriptor. Bits 0 and 1 open
+ * the I/O and memory decoders so its BARs respond. */
+void pci_enable(const struct pci_dev *d)
+{
+    uint32_t cmd = cfg_read32(d->bus, d->slot, d->func, 0x04);
+    uint16_t want = (uint16_t)(cmd & 0xFFFFu) | 0x0007u;    /* IO | MEM | BME */
+    cfg_write32(d->bus, d->slot, d->func, 0x04,
+                (cmd & 0xFFFF0000u) | want);
+
+    uint32_t back = cfg_read32(d->bus, d->slot, d->func, 0x04);
+    serial_write("[pci] enabled ");
+    serial_write_hex(d->vendor); serial_write(":"); serial_write_hex(d->device);
+    serial_write(" cmd "); serial_write_hex(back & 0xFFFFu);
+    serial_write((back & 0x4u) ? " (bus master on)
+" : " (BUS MASTER REFUSED)
+");
 }

@@ -4,7 +4,7 @@
  * ==========================================================================*/
 
 #include "net.h"
-#include "e1000.h"
+#include "nic.h"
 #include "serial.h"
 #include "string.h"
 
@@ -43,7 +43,7 @@ void net_init(void)
 
 int net_arp_request(void)
 {
-    const struct e1000_state *e = e1000_get();
+    const struct nic_info *e = nic_get();
     if (!e->present) return 0;
 
     uint8_t frame[sizeof(struct eth_hdr) + sizeof(struct arp_pkt)];
@@ -65,7 +65,7 @@ int net_arp_request(void)
     memcpy(ap->spa, ns.ip, 4);
     memcpy(ap->tpa, ns.gw_ip, 4);
 
-    if (!e1000_send(frame, sizeof(frame))) return 0;
+    if (!nic_send(frame, sizeof(frame))) return 0;
     ns.arp_tx++;
     return 1;
 }
@@ -92,7 +92,7 @@ void net_poll(void)
 {
     const uint8_t *buf = 0;
     for (int guard = 0; guard < 32; guard++) {
-        uint16_t len = e1000_receive(&buf);
+        uint16_t len = nic_recv(&buf);
         if (!len || !buf) return;
         ns.frames_rx++;
         if (len < sizeof(struct eth_hdr)) continue;

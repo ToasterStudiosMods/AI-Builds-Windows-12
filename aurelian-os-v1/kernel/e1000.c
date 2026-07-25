@@ -183,6 +183,8 @@ int e1000_init(void)
         return 0;
     }
     st.mmio = bar;
+
+    pci_enable(d);              /* was missing: no BME meant no DMA */
     map_uncached(bar);
 
     serial_write("[e1000] mmio "); serial_write_hex(bar); serial_write("\n");

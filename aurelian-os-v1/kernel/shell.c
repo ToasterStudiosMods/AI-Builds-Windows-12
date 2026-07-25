@@ -19,7 +19,7 @@
 #include "pci.h"
 #include "sched.h"
 #include "mem.h"
-#include "e1000.h"
+#include "nic.h"
 #include "net.h"
 #include "ahci.h"
 #include "reg.h"
@@ -767,14 +767,15 @@ static void draw_settings(int a)
             y2 += rowh;
         }
         /* --- network status, straight from the driver --- */
-        const struct e1000_state *e = e1000_get();
+        const struct nic_info    *e = nic_get();
         const struct net_state   *nst = net_get();
         int ny = oy + h - 74 * S;
         fb_fill(px, ny - 8 * S, pw, 1, T.stroke);
         if (!e->present) {
             fb_text(px, ny, "No supported network card", T.fg2, S);
         } else {
-            int q2 = fb_text(px, ny, "MAC ", T.fg2, S);
+            int q2 = fb_text(px, ny, e->name, T.fg, S);
+            q2 = fb_text(q2, ny, "  ", T.fg2, S);
             for (int i = 0; i < 6; i++) {
                 q2 = hex8(q2, ny, e->mac[i], T.fg);
                 if (i < 5) q2 = fb_text(q2, ny, ":", T.fg2, S);
@@ -1685,17 +1686,17 @@ static void task_net(void)
 {
     /* Wait for the link before sending anything: transmitting into a link that
      * is still negotiating leaves the descriptors unretired. */
-    for (int i = 0; i < 60 && !e1000_get()->link_up; i++) {
-        e1000_refresh_link();
+    for (int i = 0; i < 60 && !nic_get()->link_up; i++) {
+        nic_poll();
         sched_sleep(10);                   /* 100 ms per attempt, up to ~6 s */
     }
     for (;;) {
         const struct net_state *n = net_get();
         if (!n->gw_resolved && (n->arp_tx == 0 || (timer_ticks() % 200) < 10)) {
-            e1000_refresh_link();
+            nic_poll();
             net_arp_request();
         }
-        e1000_reap();
+        nic_poll();
         net_poll();
         sched_sleep(5);
     }
@@ -1783,7 +1784,7 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
 
     sched_spawn("heap-churn", task_heap_churn, 16384);
     sched_spawn("counter",    task_counter,    16384);
-    if (e1000_get()->present) sched_spawn("net", task_net, 16384);
+    if (nic_get()->present) sched_spawn("net", task_net, 16384);
 
     serial_write("[shell] Luma Shell running (");
     serial_write_u64((uint64_t)SW); serial_write("x");

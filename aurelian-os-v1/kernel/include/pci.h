@@ -34,6 +34,9 @@ const char *pci_vendor_name(uint16_t vendor);
 /* Known device name, or 0 when we have no entry for it. */
 const char *pci_device_name(uint16_t vendor, uint16_t device);
 
+/* Enable a device's decoders and bus mastering. Required before any DMA. */
+void pci_enable(const struct pci_dev *d);
+
 /* Index of the first network controller (class 0x02), or -1. */
 int pci_find_network(void);
 
