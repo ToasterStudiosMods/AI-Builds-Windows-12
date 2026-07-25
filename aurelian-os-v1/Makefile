@@ -33,7 +33,8 @@ LDFLAGS := -m elf_x86_64 -T kernel/arch/x86_64/linker.ld -nostdlib -z noexecstac
 # ---- sources ----
 C_SRCS  := kernel/kernel.c kernel/vga.c kernel/string.c kernel/fb.c \
 	   kernel/serial.c kernel/idt.c kernel/pic.c kernel/input.c \
-	   kernel/arch/x86_64/gdt.c
+	   kernel/pit.c kernel/keyboard.c kernel/mouse.c kernel/rtc.c \
+	   kernel/fs.c kernel/shell.c kernel/arch/x86_64/gdt.c
 ASM_SRCS := kernel/arch/x86_64/boot.S kernel/arch/x86_64/gdt_flush.S \
 	   kernel/arch/x86_64/isr.S
 OBJ     := $(C_SRCS:.c=.o) $(ASM_SRCS:.S=.o)
@@ -68,10 +69,12 @@ iso: $(KERNEL)
 	        echo "ERROR: grub-mkrescue not found. Install:"; \
 	        echo "  sudo apt install xorriso grub-pc-bin grub-efi-amd64-bin mtools"; \
 	        exit 1; }
+	@command -v convert >/dev/null 2>&1 || { echo "ERROR: ImageMagick 'convert' not found (needed for wallpapers)."; exit 1; }
 	rm -rf $(ISO_DIR)
 	mkdir -p $(ISO_DIR)/boot/grub
 	cp $(KERNEL) $(ISO_DIR)/boot/aurelion.elf
-	cp grub/grub.cfg $(ISO_DIR)/boot/grub/grub.cfg
+	@# ---- wallpapers as Multiboot2 modules + generated grub.cfg ----
+	bash scripts/mkwallpapers.sh $(ISO_DIR)
 	grub-mkrescue -o $(ISO) $(ISO_DIR) 2>/dev/null
 	rm -rf $(ISO_DIR)
 	@echo ""
