@@ -20,7 +20,7 @@
 #include "shell.h"
 #include "mem.h"
 #include "sched.h"
-#include "e1000.h"
+#include "nic.h"
 #include "net.h"
 #include "ahci.h"
 #include "pci.h"

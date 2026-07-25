@@ -198,7 +198,6 @@ void pci_enable(const struct pci_dev *d)
     serial_write("[pci] enabled ");
     serial_write_hex(d->vendor); serial_write(":"); serial_write_hex(d->device);
     serial_write(" cmd "); serial_write_hex(back & 0xFFFFu);
-    serial_write((back & 0x4u) ? " (bus master on)
-" : " (BUS MASTER REFUSED)
-");
+    serial_write((back & 0x4u) ? " (bus master on)\n"
+                               : " (BUS MASTER REFUSED)\n");
 }
