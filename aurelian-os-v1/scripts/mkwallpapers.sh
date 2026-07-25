@@ -53,6 +53,11 @@ fi
 # progress markers: if a load ever fails, GRUB stops with its error right after
 # the last marker printed, which makes the failure obvious on a screenshot.
 {
+    # Mirror GRUB's own output to COM1 as well as the screen. VirtualBox does
+    # not reliably expose the text-mode framebuffer to screenshots, so serial is
+    # the only trustworthy record of what the loader did.
+    echo "serial --unit=0 --speed=38400"
+    echo "terminal_output console serial"
     echo "set timeout=3"
     echo "set default=0"
     echo "insmod all_video"
