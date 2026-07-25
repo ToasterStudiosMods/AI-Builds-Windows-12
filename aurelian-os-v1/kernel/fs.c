@@ -4,6 +4,8 @@
  * ==========================================================================*/
 
 #include "fs.h"
+#include "ahci.h"
+#include "serial.h"
 #include "string.h"
 
 #define POOL_SIZE   12288
@@ -19,10 +21,12 @@ struct node {
     uint32_t cap;
 };
 
-static struct node nodes[FS_MAX_NODES];
-static char        pool[POOL_SIZE];
-static uint32_t    pool_used;
-static int         node_count;
+struct node nodes[FS_MAX_NODES];
+char        pool[POOL_SIZE];
+uint32_t    pool_used;
+int         node_count;
+int         fs_persistent;   /* tree is backed by a disk image */
+uint32_t    fs_boot_count;   /* incremented and re-saved every mount */
 
 static void set_name(char *dst, const char *src)
 {
@@ -84,9 +88,11 @@ void fs_init(void)
         "[x] framebuffer graphics\n"
         "[x] interrupts + PS/2 input\n"
         "[x] Luma Shell + apps\n"
-        "[ ] disk driver\n"
-        "[ ] real filesystem\n"
-        "[ ] processes\n");
+        "[x] AHCI disk driver, read and write\n"
+        "[x] files survive a restart\n"
+        "[ ] registry + editor\n"
+        "[ ] networking\n"
+        "[ ] processes with address spaces\n");
 
     add_node(pics, "wallpapers.txt", 0,
         "Wallpapers ship as boot modules and are\n"
@@ -104,19 +110,17 @@ void fs_init(void)
         "Original clean-room implementation.\n"
         "No Microsoft code or assets.\n");
     add_node(sys, "READ-THIS.txt", 0,
-        "This is NOT a real system folder.\n\n"
-        "There is no disk driver and no real\n"
-        "filesystem yet. Every folder and file\n"
-        "you can see is a small tree built in RAM\n"
-        "at boot by kernel/fs.c - it does not\n"
-        "contain the operating system, and it is\n"
-        "not stored on the disc you booted from.\n\n"
-        "Edits are kept in memory only and are\n"
-        "gone on the next restart.\n\n"
-        "Real storage needs, in order:\n"
-        "  1. PCI enumeration        (done)\n"
-        "  2. AHCI/SATA disk driver  (todo)\n"
-        "  3. a real filesystem      (todo)\n");
+        "About this filesystem.\n\n"
+        "With a SATA disk attached, this tree is\n"
+        "stored on it and your edits survive a\n"
+        "restart. Explorer says which mode is in\n"
+        "use at the top of the listing, and\n"
+        "Settings > System reports the details.\n\n"
+        "With no disk it runs in memory only and\n"
+        "resets on every boot.\n\n"
+        "It still does not contain the operating\n"
+        "system itself - that lives on the boot\n"
+        "media, not in here.\n");
 }
 
 int fs_root(void) { return 0; }
@@ -190,4 +194,126 @@ void fs_path(int n, char *buf, uint32_t cap)
 int fs_create(int dir, const char *name)
 {
     return add_node(dir, name, 0, "");
+}
+
+
+/* ==================================================================
+ * Persistence
+ *
+ * The whole tree is small and fixed-size, so it is written out verbatim: a
+ * superblock sector carrying a magic and the counts, followed by the node table
+ * and the content pool. That is enough for files edited in Notepad to still be
+ * there after a restart, which is the point of having a disk at all.
+ *
+ * The layout deliberately lives above AHCI_RESERVED_LBA so it can never scribble
+ * on a disk that already holds something.
+ * ================================================================== */
+
+#define FS_MAGIC0 'A'
+#define FS_MAGIC1 'U'
+#define FS_MAGIC2 'R'
+#define FS_MAGIC3 'F'
+#define FS_VERSION 1
+
+struct fs_super {
+    char     magic[4];          /* AURF */
+    uint32_t version;
+    uint32_t node_count;
+    uint32_t pool_used;
+    uint32_t nodes_bytes;
+    uint32_t pool_bytes;
+    uint32_t boot_count;        /* proves a modified image really persisted */
+};
+
+/* One staging buffer, sector aligned in size, covering super + nodes + pool. */
+#define FS_IMAGE_BYTES (AHCI_FS_SECTORS * AHCI_SECTOR)
+static uint8_t fs_image[FS_IMAGE_BYTES];
+
+int fs_disk_save(void)
+{
+    const struct ahci_state *ah = ahci_get();
+    if (!ah->present || !ah->disk.present) return 0;
+
+    uint32_t need = (uint32_t)(sizeof(struct fs_super) + sizeof(nodes) + sizeof(pool));
+    if (need > FS_IMAGE_BYTES) { serial_write("[fs] image too large to persist\n"); return 0; }
+
+    memset(fs_image, 0, sizeof(fs_image));
+    struct fs_super *sb = (struct fs_super *)fs_image;
+    sb->magic[0] = FS_MAGIC0; sb->magic[1] = FS_MAGIC1;
+    sb->magic[2] = FS_MAGIC2; sb->magic[3] = FS_MAGIC3;
+    sb->version     = FS_VERSION;
+    sb->node_count  = (uint32_t)node_count;
+    sb->pool_used   = pool_used;
+    sb->nodes_bytes = (uint32_t)sizeof(nodes);
+    sb->pool_bytes  = (uint32_t)sizeof(pool);
+    sb->boot_count  = fs_boot_count;
+
+    uint8_t *p = fs_image + sizeof(struct fs_super);
+    memcpy(p, nodes, sizeof(nodes)); p += sizeof(nodes);
+    memcpy(p, pool,  sizeof(pool));
+
+    /* ahci_write takes at most 8 sectors per command. */
+    for (uint32_t s = 0; s < AHCI_FS_SECTORS; s += 8) {
+        uint32_t n = (AHCI_FS_SECTORS - s) < 8 ? (AHCI_FS_SECTORS - s) : 8;
+        if (!ahci_write(AHCI_FS_LBA + s, n, fs_image + (uint64_t)s * AHCI_SECTOR)) {
+            serial_write("[fs] save failed\n");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int fs_disk_load(void)
+{
+    const struct ahci_state *ah = ahci_get();
+    if (!ah->present || !ah->disk.present) return 0;
+
+    for (uint32_t s = 0; s < AHCI_FS_SECTORS; s += 8) {
+        uint32_t n = (AHCI_FS_SECTORS - s) < 8 ? (AHCI_FS_SECTORS - s) : 8;
+        if (!ahci_read(AHCI_FS_LBA + s, n, fs_image + (uint64_t)s * AHCI_SECTOR))
+            return 0;
+    }
+
+    const struct fs_super *sb = (const struct fs_super *)fs_image;
+    if (sb->magic[0] != FS_MAGIC0 || sb->magic[1] != FS_MAGIC1 ||
+        sb->magic[2] != FS_MAGIC2 || sb->magic[3] != FS_MAGIC3) return 0;
+    if (sb->version != FS_VERSION) return 0;
+    if (sb->nodes_bytes != sizeof(nodes) || sb->pool_bytes != sizeof(pool)) return 0;
+    if (sb->node_count > FS_MAX_NODES) return 0;
+
+    const uint8_t *p = fs_image + sizeof(struct fs_super);
+    memcpy(nodes, p, sizeof(nodes)); p += sizeof(nodes);
+    memcpy(pool,  p, sizeof(pool));
+    node_count    = (int)sb->node_count;
+    pool_used     = sb->pool_used;
+    fs_boot_count = sb->boot_count;
+
+    serial_write("[fs] loaded from disk, ");
+    serial_write_u64((uint64_t)node_count);
+    serial_write(" nodes\n");
+    return 1;
+}
+
+/* Load the tree from disk if a valid image is there, otherwise build the
+ * defaults and write them out so the next boot finds them. */
+void fs_mount(void)
+{
+    if (fs_disk_load()) {
+        fs_persistent = 1;
+        /* Bump the counter and write it straight back. If this number climbs
+         * across restarts then a *modified* image is genuinely reaching the
+         * disk, which is a stronger claim than reading back what we wrote in
+         * the same session. */
+        fs_boot_count++;
+        fs_disk_save();
+        serial_write("[fs] mounted from disk, boot #");
+        serial_write_u64((uint64_t)fs_boot_count);
+        serial_write("\n");
+        return;
+    }
+    fs_init();
+    fs_boot_count = 1;
+    fs_persistent = fs_disk_save();
+    serial_write(fs_persistent ? "[fs] formatted disk, boot #1\n"
+                               : "[fs] no disk; running in memory only\n");
 }

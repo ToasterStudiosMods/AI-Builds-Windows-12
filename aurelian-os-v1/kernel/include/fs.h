@@ -17,6 +17,12 @@
 #define FS_NAME_MAX  24
 
 void        fs_init(void);
+/* Load the tree from disk, or format and save the defaults. */
+void        fs_mount(void);
+int         fs_disk_save(void);
+int         fs_disk_load(void);
+extern int  fs_persistent;      /* non-zero when changes reach the disk */
+extern uint32_t fs_boot_count;  /* how many times this image has been mounted */
 int         fs_root(void);
 /* i-th child of `dir`, or -1 when there are no more. */
 int         fs_child(int dir, int i);

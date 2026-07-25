@@ -416,9 +416,15 @@ static void draw_explorer(int a)
     int lx = ox + side + 1, ly = oy + tool, lw = w - side - 1;
 
     /* Be upfront about what this is: an in-memory tree, not a disk. */
-    fb_fill_a(lx, ly, lw, 22 * S, 0x00F5BE4Bu, dark_mode ? 0x22 : 0x38);
-    fb_text(lx + 12 * S, ly + 3 * S,
-            "RAM disk - in memory only, resets on restart", T.fg2, S);
+    if (fs_persistent) {
+        fb_fill_a(lx, ly, lw, 22 * S, 0x0022C55Eu, dark_mode ? 0x22 : 0x30);
+        fb_text(lx + 12 * S, ly + 3 * S,
+                "On disk - changes survive a restart", T.fg2, S);
+    } else {
+        fb_fill_a(lx, ly, lw, 22 * S, 0x00F5BE4Bu, dark_mode ? 0x22 : 0x38);
+        fb_text(lx + 12 * S, ly + 3 * S,
+                "RAM only - no disk attached, changes are lost", T.fg2, S);
+    }
     ly += 24 * S;
 
     fb_text(lx + 14 * S, ly + 6 * S, "Name", T.fg2, S);
@@ -1109,6 +1115,7 @@ static void np_save(void)
         if (np_file < 0) return;
     }
     fs_write(np_file, np_buf, (uint32_t)np_len);
+    if (fs_persistent) fs_disk_save();   /* make the edit outlive the reboot */
     np_dirty = 0;
 }
 
@@ -1551,7 +1558,7 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
 {
     metrics_init();
     theme_apply();
-    fs_init();
+    fs_mount();      /* prefer the on-disk tree */
     g_mem_kib = mem_kib;
     tb_btn = 44;
 

@@ -52,6 +52,8 @@
 
 #define ATA_IDENTIFY      0xEC
 #define ATA_READ_DMA_EXT  0x25
+#define ATA_WRITE_DMA_EXT 0x35
+#define ATA_FLUSH_EXT     0xEA
 
 struct cmd_header {
     uint16_t flags;                 /* 0-4 CFL, 5 A, 6 W, 7 P, 8 R, 9 B, 10 C */
@@ -184,27 +186,55 @@ static int identify(uint8_t p)
     return 1;
 }
 
-int ahci_read(uint64_t lba, uint32_t count, void *buf)
+/* Build and run one LBA48 data command. `write` selects the direction. */
+static int ata_lba48(uint8_t cmd, uint64_t lba, uint32_t count, void *buf, int write)
 {
-    if (!st.present || !st.disk.present || count == 0 || count > 8) return 0;
-
-    setup_slot0(buf, count * AHCI_SECTOR, 0);
+    setup_slot0(buf, count * AHCI_SECTOR, write);
     uint8_t *f = ctab[0].cfis;
-    f[0] = 0x27;
-    f[1] = 0x80;
-    f[2] = ATA_READ_DMA_EXT;
-    f[4] = (uint8_t)(lba      );
-    f[5] = (uint8_t)(lba >>  8);
-    f[6] = (uint8_t)(lba >> 16);
-    f[7] = 0x40;                    /* LBA mode */
-    f[8] = (uint8_t)(lba >> 24);
-    f[9] = (uint8_t)(lba >> 32);
+    f[0]  = 0x27;                   /* host-to-device register FIS */
+    f[1]  = 0x80;                   /* command, not control        */
+    f[2]  = cmd;
+    f[4]  = (uint8_t)(lba      );
+    f[5]  = (uint8_t)(lba >>  8);
+    f[6]  = (uint8_t)(lba >> 16);
+    f[7]  = 0x40;                   /* LBA mode                    */
+    f[8]  = (uint8_t)(lba >> 24);
+    f[9]  = (uint8_t)(lba >> 32);
     f[10] = (uint8_t)(lba >> 40);
     f[12] = (uint8_t)(count      );
     f[13] = (uint8_t)(count >> 8);
+    return run_slot0(st.disk.port);
+}
 
-    if (!run_slot0(st.disk.port)) { st.disk.reads_failed++; return 0; }
+int ahci_read(uint64_t lba, uint32_t count, void *buf)
+{
+    if (!st.present || !st.disk.present || count == 0 || count > 8) return 0;
+    if (!ata_lba48(ATA_READ_DMA_EXT, lba, count, buf, 0)) {
+        st.disk.reads_failed++;
+        return 0;
+    }
     st.disk.reads_ok++;
+    return 1;
+}
+
+int ahci_write(uint64_t lba, uint32_t count, const void *buf)
+{
+    if (!st.present || !st.disk.present || count == 0 || count > 8) return 0;
+    /* Never write outside the region we reserved for ourselves: a disk handed
+     * to this machine may hold something the user cares about. */
+    if (lba < AHCI_RESERVED_LBA) return 0;
+    if (!ata_lba48(ATA_WRITE_DMA_EXT, lba, count, (void *)buf, 1)) {
+        st.disk.writes_failed++;
+        return 0;
+    }
+    /* Flush the drive's cache so the data is durable, not merely accepted. */
+    setup_slot0(dmabuf, AHCI_SECTOR, 0);
+    uint8_t *ff = ctab[0].cfis;
+    ff[0] = 0x27; ff[1] = 0x80; ff[2] = ATA_FLUSH_EXT; ff[7] = 0x40;
+    clist[0].prdtl = 0;                        /* no data phase */
+    run_slot0(st.disk.port);
+
+    st.disk.writes_ok++;
     return 1;
 }
 
@@ -292,6 +322,26 @@ int ahci_init(void)
             serial_write("\n");
         } else {
             serial_write("[ahci] LBA0 read FAILED\n");
+        }
+
+        /* Round-trip a recognisable pattern through the scratch sector. A read
+         * alone cannot show that writes land, and writing without reading back
+         * cannot show that they landed correctly. */
+        for (int i = 0; i < AHCI_SECTOR; i++) dmabuf[i] = (uint8_t)(0xA5 ^ (i & 0xFF));
+        if (ahci_write(AHCI_SCRATCH_LBA, 1, dmabuf)) {
+            memset(dmabuf, 0, AHCI_SECTOR);
+            if (ahci_read(AHCI_SCRATCH_LBA, 1, dmabuf)) {
+                int ok = 1;
+                for (int i = 0; i < AHCI_SECTOR; i++)
+                    if (dmabuf[i] != (uint8_t)(0xA5 ^ (i & 0xFF))) { ok = 0; break; }
+                st.disk.rw_verified = (uint8_t)ok;
+                serial_write(ok ? "[ahci] write/read round trip VERIFIED\n"
+                                : "[ahci] write/read round trip MISMATCH\n");
+            } else {
+                serial_write("[ahci] scratch read back failed\n");
+            }
+        } else {
+            serial_write("[ahci] scratch write failed\n");
         }
     }
 

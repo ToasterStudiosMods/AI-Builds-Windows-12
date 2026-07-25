@@ -16,6 +16,14 @@
 #define AHCI_MAX_PORTS 32
 #define AHCI_SECTOR    512
 
+/* Everything below this LBA is off limits to writes, so a disk that already
+ * holds something cannot be damaged by us. The filesystem and the scratch
+ * sector both live above it. */
+#define AHCI_RESERVED_LBA   64
+#define AHCI_FS_LBA         64
+#define AHCI_FS_SECTORS     48
+#define AHCI_SCRATCH_LBA    (AHCI_FS_LBA + AHCI_FS_SECTORS)
+
 enum ahci_kind { AHCI_NONE = 0, AHCI_SATA, AHCI_SATAPI, AHCI_OTHER };
 
 struct ahci_disk {
@@ -25,6 +33,8 @@ struct ahci_disk {
     char     model[41];             /* from IDENTIFY DEVICE    */
     uint64_t sectors;               /* LBA48 capacity          */
     uint32_t reads_ok, reads_failed;
+    uint32_t writes_ok, writes_failed;
+    uint8_t  rw_verified;      /* a pattern survived write then read */
 };
 
 struct ahci_state {
@@ -38,6 +48,8 @@ struct ahci_state {
 int  ahci_init(void);
 /* Read `count` sectors from `lba` into buf (count * 512 bytes). 1 on success. */
 int  ahci_read(uint64_t lba, uint32_t count, void *buf);
+/* Write sectors. Refuses any LBA below AHCI_RESERVED_LBA. */
+int  ahci_write(uint64_t lba, uint32_t count, const void *buf);
 
 const struct ahci_state *ahci_get(void);
 /* First 16 bytes of LBA 0, captured at init as proof of a real read. */
