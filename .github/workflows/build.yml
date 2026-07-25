@@ -47,6 +47,11 @@ jobs:
     defaults:
       run:
         working-directory: aurelian-os-v1
+    # On pull_request events the checkout is a synthetic merge commit, so the
+    # repository's own HEAD is not the commit under review. Pass the real head
+    # SHA through so the kernel's build stamp identifies the source revision.
+    env:
+      AUR_REV: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
 

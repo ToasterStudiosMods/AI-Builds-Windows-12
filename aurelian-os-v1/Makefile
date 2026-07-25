@@ -34,7 +34,9 @@ LDFLAGS := -m elf_x86_64 -T kernel/arch/x86_64/linker.ld -nostdlib -z noexecstac
 # the finished ISO for this string, which is the only reliable way to prove the
 # artifact under test is the code that was just written (comments and file
 # timestamps do not survive compilation).
-REV := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+# AUR_REV, when set by CI, is the real source commit; the repository's own HEAD
+# is a merge commit on pull_request events and would identify the wrong thing.
+REV := $(if $(AUR_REV),$(shell echo $(AUR_REV) | cut -c1-7),$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown))
 CFLAGS += -DBUILD_REV=\"$(REV)\"
 
 # ---- sources ----
