@@ -83,9 +83,14 @@ static void keyboard_handler(void)
 
     int shifted = left_shift || right_shift;
 
+    /* Report E0-prefixed keys with bit 7 set in the keycode. Set-1 make codes
+     * are 7-bit, so the high bit is free and lets consumers tell the arrow keys
+     * apart from the numeric keypad digits that share their codes. */
+    uint8_t report = extended ? (uint8_t)(keycode | 0x80) : keycode;
+
     struct input_event ev = {
         .type    = make ? INPUT_KEY_DOWN : INPUT_KEY_UP,
-        .keycode = keycode,
+        .keycode = report,
         .ascii   = make ? (shifted ? shifted_ascii[keycode]
                                    : unshifted_ascii[keycode]) : 0,
         .buttons = 0,

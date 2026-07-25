@@ -276,6 +276,11 @@ static uint32_t wp_w[MAX_WP], wp_h[MAX_WP];
 static int wp_count, wp_active = -1;
 static uint32_t g_mem_kib;
 
+/* input counters — surfaced in Settings > System so a user can confirm the
+ * PS/2 drivers are delivering events (there is no way to inject mouse input
+ * from the host, so this is how the mouse gets verified). */
+static uint32_t mouse_events, key_events;
+
 static void wallpaper_select(int i)
 {
     if (i < 0 || i >= wp_count || i == wp_active) return;
@@ -608,6 +613,14 @@ static void draw_settings(int a)
         p = fb_text(p, y2, "m ", T.fg, S);
         p = fb_num(p, y2, sec % 60, T.fg, S);
         fb_text(p, y2, "s", T.fg, S);
+
+        y2 += LH + 12 * S;
+        section(px, y2, "Input (PS/2)");
+        y2 += LH + 2 * S;
+        p = fb_text(px, y2, "mouse ", T.fg2, S);
+        p = fb_num(p, y2, mouse_events, mouse_events ? 0x00059669u : 0x00C42B1Cu, S);
+        p = fb_text(p, y2, "  keys ", T.fg2, S);
+        fb_num(p, y2, key_events, key_events ? 0x00059669u : 0x00C42B1Cu, S);
     } else {
         icon(APP_ABOUT, px, py, 40 * S);
         text_bold(px + 52 * S, py + 2 * S, "Aurelian OS", T.fg, 2 * S);
@@ -631,9 +644,11 @@ static void draw_about(int a)
 
     int y2 = py + 68 * S;
     fb_text(px, y2, "A from-scratch x86-64 operating system:", T.fg, S); y2 += LH;
-    fb_text(px, y2, "own kernel, graphics stack and shell.", T.fg, S);   y2 += LH + 10 * S;
-    fb_text(px, y2, "Open Start to launch apps. Drag a window", T.fg2, S); y2 += LH;
-    fb_text(px, y2, "by its title bar; the taskbar switches.", T.fg2, S);
+    fb_text(px, y2, "own kernel, graphics stack and shell.", T.fg, S);   y2 += LH + 8 * S;
+    section(px, y2, "Keyboard");                                          y2 += LH;
+    fb_text(px, y2, "F1-F8  launch apps    Esc  Start", T.fg2, S);        y2 += LH;
+    fb_text(px, y2, "F9  theme   F10  wallpaper", T.fg2, S);              y2 += LH;
+    fb_text(px, y2, "F11 next window       F12  close", T.fg2, S);
 
     (void)w;
 }
@@ -1096,6 +1111,38 @@ static void app_click(int a, int lx, int ly)
     }
 }
 
+/* Non-text keys for the focused app. Returns 1 if the key was consumed.
+ * Extended (E0-prefixed) keys arrive with bit 7 set — see keyboard.c. */
+static int app_keycode(int a, uint8_t k)
+{
+    if (a == APP_EXPLORER) {
+        int n = fs_child_count(ex_dir);
+        switch (k) {
+        case 0xC8:                                  /* up    */
+            if (n) ex_sel = (ex_sel <= 0) ? n - 1 : ex_sel - 1;
+            return 1;
+        case 0xD0:                                  /* down  */
+            if (n) ex_sel = (ex_sel < 0 || ex_sel >= n - 1) ? 0 : ex_sel + 1;
+            return 1;
+        case 0x1C:                                  /* enter */
+            if (ex_sel >= 0 && ex_sel < n) {
+                int node = fs_child(ex_dir, ex_sel);
+                if (fs_is_dir(node)) { ex_dir = node; ex_sel = -1; }
+                else { np_open(node); open_app(APP_NOTEPAD); }
+            }
+            return 1;
+        case 0x0E:                                  /* backspace: up a level */
+        case 0xCB: {                                /* left */
+            int p = fs_parent(ex_dir);
+            if (p >= 0) { ex_dir = p; ex_sel = -1; }
+            return 1;
+        }
+        default: return 0;
+        }
+    }
+    return 0;
+}
+
 static void app_key(int a, char ch)
 {
     if (a == APP_NOTEPAD) {
@@ -1227,7 +1274,7 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
     wins[APP_PAINT]    = (struct win){ 0,0, 560*S, 380*S, 0,0 };
     wins[APP_TERM]     = (struct win){ 0,0, 540*S, 320*S, 0,0 };
     wins[APP_SETTINGS] = (struct win){ 0,0, 620*S, 430*S, 0,0 };
-    wins[APP_ABOUT]    = (struct win){ 0,0, 430*S, 260*S, 0,0 };
+    wins[APP_ABOUT]    = (struct win){ 0,0, 430*S, 330*S, 0,0 };
     for (int i = 0; i < APP_COUNT; i++) {
         if (wins[i].w > SW - 20 * S) wins[i].w = SW - 20 * S;
         if (wins[i].h > SH - TASKH - 20 * S) wins[i].h = SH - TASKH - 20 * S;
@@ -1254,6 +1301,7 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
         while (input_poll(&e)) {
             dirty = 1;
             if (e.type == INPUT_MOUSE) {
+                mouse_events++;
                 cx = clampi(cx + e.dx, 0, SW - 1);
                 cy = clampi(cy - e.dy, 0, SH - 1);
                 uint8_t lb = e.buttons & 1u;
@@ -1272,9 +1320,29 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
                         paint_stroke(a);
                 }
                 prev_btn = e.buttons;
-            } else if (e.type == INPUT_KEY_DOWN && e.ascii) {
-                int a = top_app();
-                if (a >= 0) app_key(a, e.ascii);
+            } else if (e.type == INPUT_KEY_DOWN) {
+                key_events++;
+                uint8_t k = e.keycode;
+                if (k >= 0x3B && k <= 0x42) {           /* F1..F8 launch apps  */
+                    open_app(k - 0x3B); start_open = 0;
+                } else if (k == 0x43) {                  /* F9  theme          */
+                    dark_mode = !dark_mode; theme_apply();
+                } else if (k == 0x44) {                  /* F10 next wallpaper */
+                    if (wp_count) wallpaper_select((wp_active + 1) % wp_count);
+                } else if (k == 0x57) {                  /* F11 cycle windows  */
+                    if (zn > 1) {
+                        int f = zlist[zn - 1];
+                        for (int i = zn - 1; i > 0; i--) zlist[i] = zlist[i - 1];
+                        zlist[0] = f;
+                    }
+                } else if (k == 0x58) {                  /* F12 close window   */
+                    int a = top_app(); if (a >= 0) close_app(a);
+                } else if (k == 0x01) {                  /* Esc  Start menu    */
+                    start_open = !start_open;
+                } else {
+                    int a = top_app();
+                    if (a >= 0 && !app_keycode(a, k) && e.ascii) app_key(a, e.ascii);
+                }
             }
         }
 
