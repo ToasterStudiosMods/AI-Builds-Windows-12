@@ -12,5 +12,6 @@ void serial_init(void);
 void serial_write(const char *s);
 void serial_write_u64(uint64_t v);
 void serial_write_hex(uint64_t v);
+void serial_write_hex8(uint8_t v);
 
 #endif /* AURELIAN_SERIAL_H */

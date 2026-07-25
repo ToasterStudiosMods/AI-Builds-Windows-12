@@ -16,6 +16,13 @@
 #include "input.h"
 #include "timer.h"
 #include "rtc.h"
+#include "pci.h"
+#include "sched.h"
+#include "mem.h"
+#include "nic.h"
+#include "net.h"
+#include "ahci.h"
+#include "reg.h"
 #include "serial.h"
 #include "string.h"
 #include <stdint.h>
@@ -76,23 +83,49 @@ static void metrics_init(void)
 /* 3. Apps                                                             */
 /* ================================================================== */
 enum { APP_EXPLORER, APP_NOTEPAD, APP_CALC, APP_CLOCK,
-       APP_PAINT, APP_TERM, APP_SETTINGS, APP_ABOUT, APP_COUNT };
+       APP_PAINT, APP_TERM, APP_SETTINGS, APP_TASKS, APP_REGEDIT,
+       APP_ABOUT, APP_COUNT };
 
 static const char *app_title[APP_COUNT] = {
     "File Explorer", "Notepad", "Calculator", "Clock",
-    "Paint", "Terminal", "Settings", "About Aurelian OS"
+    "Paint", "Terminal", "Settings", "Task Manager", "Registry Editor",
+    "About Aurelian OS"
 };
 static const char *app_short[APP_COUNT] = {
-    "Files", "Notepad", "Calc", "Clock", "Paint", "Terminal", "Settings", "About"
+    "Files", "Notepad", "Calc", "Clock", "Paint", "Terminal",
+    "Settings", "Tasks", "Registry", "About"
 };
 
-struct win { int x, y, w, h; uint8_t open, min; };
+/* anim: 0..256 open progress, eased when drawn. Windows slide up into place
+ * instead of appearing instantly. */
+struct win { int x, y, w, h; uint8_t open, min; int16_t anim; };
 static struct win wins[APP_COUNT];
 static int zlist[APP_COUNT], zn;
 
 /* ================================================================== */
 /* 4. Small helpers                                                    */
 /* ================================================================== */
+/* ---- animation ----------------------------------------------------- */
+#define ANIM_FULL 256
+static int start_anim;          /* Start menu reveal 0..256           */
+static int hover_anim[16];      /* taskbar button hover ramps         */
+
+/* ease-out cubic on 0..256 — fast at first, settling gently at the end */
+static int ease_out(int t)
+{
+    if (t <= 0) return 0;
+    if (t >= ANIM_FULL) return ANIM_FULL;
+    int u = ANIM_FULL - t;
+    return ANIM_FULL - (u * u * u) / (ANIM_FULL * ANIM_FULL);
+}
+
+static int step_toward(int v, int target, int rate)
+{
+    if (v < target) { v += rate; if (v > target) v = target; }
+    else if (v > target) { v -= rate; if (v < target) v = target; }
+    return v;
+}
+
 static int in_r(int px, int py, int x, int y, int w, int h)
 { return px >= x && px < x + w && py >= y && py < y + h; }
 
@@ -106,6 +139,27 @@ static int str_pre(const char *s, const char *pre)
 
 static int text_bold(int x, int y, const char *s, uint32_t c, int sc)
 { fb_text(x, y, s, c, sc); return fb_text(x + 1, y, s, c, sc); }
+
+/* 2-digit hex, for MAC octets. */
+static int hex8(int x, int y, uint8_t v, uint32_t c)
+{
+    static const char *H = "0123456789ABCDEF";
+    char b[3];
+    b[0] = H[(v >> 4) & 0xF];
+    b[1] = H[v & 0xF];
+    b[2] = 0;
+    return fb_text(x, y, b, c, S);
+}
+
+/* 4-digit hex, for PCI ids. */
+static int hex16(int x, int y, uint16_t v, uint32_t c)
+{
+    static const char *H = "0123456789ABCDEF";
+    char b[5];
+    for (int i = 0; i < 4; i++) b[i] = H[(v >> ((3 - i) * 4)) & 0xF];
+    b[4] = 0;
+    return fb_text(x, y, b, c, S);
+}
 
 /* cursor position, needed for hover states */
 static int cx, cy;
@@ -171,6 +225,25 @@ static void icon(int a, int x, int y, int sz)
         fb_round(x + r - q / 2, y + r - q / 2, q, q, q / 2, T.layer);
         break;
     }
+    case APP_REGEDIT: {                                 /* key/value rows */
+        fb_round(x, y, sz, sz, RADS / 2 + 1, 0x00EFF3F8u);
+        fb_round_border(x, y, sz, sz, RADS / 2 + 1, 1, 0x009AA6B4u, 0xFF);
+        for (int r = 0; r < 3; r++) {
+            int ry = y + q / 2 + r * (q * 3 / 4);
+            fb_fill(x + q / 2, ry, q, q / 3, 0x004C6EF5u);
+            fb_fill(x + q * 2, ry, sz - q * 5 / 2, q / 3, 0x00A0AAB8u);
+        }
+        break;
+    }
+    case APP_TASKS: {                                   /* bar chart */
+        fb_round(x, y, sz, sz, RADS / 2 + 1, 0x00F7FAFCu);
+        fb_round_border(x, y, sz, sz, RADS / 2 + 1, 1, 0x00A8B0BEu, 0xFF);
+        int bw = q / 2, base = y + sz - q / 2;
+        fb_fill(x + q / 2,               base - q,     bw, q,     0x000891B2u);
+        fb_fill(x + q / 2 + bw + 2,      base - q * 2, bw, q * 2, 0x0022C55Eu);
+        fb_fill(x + q / 2 + 2*(bw + 2),  base - q * 3 / 2, bw, q * 3 / 2, 0x00F59E0Bu);
+        break;
+    }
     default:                                            /* about / logo */
         fb_round(x, y, sz, sz, RADS / 2 + 1, accent);
         fb_fill(x + sz / 2 - 1, y + q / 2, 2 + S, sz - q, 0x00FFFFFFu);
@@ -198,6 +271,7 @@ static void open_app(int a)
     if (!wins[a].open) {
         wins[a].open = 1;
         wins[a].min  = 0;
+        wins[a].anim = 0;      /* animate in */
         /* cascade, keeping the window on-screen */
         int step = 28 * S;
         wins[a].x = clampi(60 * S + (a % 5) * step, 0, SW - wins[a].w);
@@ -276,6 +350,10 @@ static uint32_t wp_w[MAX_WP], wp_h[MAX_WP];
 static int wp_count, wp_active = -1;
 static uint32_t g_mem_kib;
 
+/* background-thread counters (defined here so the Task Manager can read
+ * them; the threads themselves live further down) */
+static volatile uint32_t churn_rounds, churn_fail, counter_ticks;
+
 /* input counters — surfaced in Settings > System so a user can confirm the
  * PS/2 drivers are delivering events (there is no way to inject mouse input
  * from the host, so this is how the mouse gets verified). */
@@ -284,6 +362,7 @@ static uint32_t mouse_events, key_events;
 static void wallpaper_select(int i)
 {
     if (i < 0 || i >= wp_count || i == wp_active) return;
+    if (wp_active >= 0) fb_fade_begin();   /* keep the old one to blend from */
     wp_active = i;
     fb_set_wallpaper(wp_px[i], wp_w[i], wp_h[i]);
 }
@@ -348,6 +427,19 @@ static void draw_explorer(int a)
 
     /* header + file list */
     int lx = ox + side + 1, ly = oy + tool, lw = w - side - 1;
+
+    /* Be upfront about what this is: an in-memory tree, not a disk. */
+    if (fs_persistent) {
+        fb_fill_a(lx, ly, lw, 22 * S, 0x0022C55Eu, dark_mode ? 0x22 : 0x30);
+        fb_text(lx + 12 * S, ly + 3 * S,
+                "On disk - changes survive a restart", T.fg2, S);
+    } else {
+        fb_fill_a(lx, ly, lw, 22 * S, 0x00F5BE4Bu, dark_mode ? 0x22 : 0x38);
+        fb_text(lx + 12 * S, ly + 3 * S,
+                "RAM only - no disk attached, changes are lost", T.fg2, S);
+    }
+    ly += 24 * S;
+
     fb_text(lx + 14 * S, ly + 6 * S, "Name", T.fg2, S);
     fb_text(lx + lw - 76 * S, ly + 6 * S, "Size", T.fg2, S);
     fb_fill(lx + 10 * S, ly + 26 * S, lw - 20 * S, 1, T.stroke);
@@ -531,8 +623,8 @@ static void draw_settings(int a)
     int nav = 140 * S;
     fb_fill(ox, oy, nav, h, T.layer2);
     fb_fill(ox + nav, oy, 1, h, T.stroke);
-    static const char *pages[3] = { "Personalise", "System", "About" };
-    for (int i = 0; i < 3; i++) {
+    static const char *pages[4] = { "Personalise", "System", "Devices", "About" };
+    for (int i = 0; i < 4; i++) {
         int iy = oy + 12 * S + i * 32 * S;
         int on = (set_page == i);
         int hv = in_r(cx, cy, ox + 6 * S, iy, nav - 12 * S, 28 * S);
@@ -615,12 +707,106 @@ static void draw_settings(int a)
         fb_text(p, y2, "s", T.fg, S);
 
         y2 += LH + 12 * S;
+        section(px, y2, "Storage");
+        y2 += LH + 2 * S;
+        {
+            const struct ahci_state *ah = ahci_get();
+            if (!ah->present) {
+                fb_text(px, y2, "no AHCI controller", T.fg2, S);
+            } else if (!ah->disk.present) {
+                fb_text(px, y2, "AHCI up, no SATA disk attached", T.fg2, S);
+                y2 += LH;
+                fb_text(px, y2, "(optical media needs SCSI packets)", T.fg2, S);
+            } else {
+                fb_text(px, y2, ah->disk.model, T.fg, S);
+                y2 += LH;
+                /* 512-byte sectors -> MiB */
+                int q5 = fb_num(px, y2, (uint32_t)(ah->disk.sectors / 2048), T.fg, S);
+                q5 = fb_text(q5, y2, " MiB   LBA0 ", T.fg2, S);
+                const uint8_t *sec = ahci_first_sector();
+                for (int i = 0; i < 4; i++) {
+                    q5 = hex8(q5, y2, sec[i], T.fg);
+                    q5 = fb_text(q5, y2, " ", T.fg2, S);
+                }
+                y2 += LH;
+                int q6 = fb_text(px, y2, "reads ok ", T.fg2, S);
+                q6 = fb_num(q6, y2, ah->disk.reads_ok,
+                            ah->disk.reads_ok ? 0x00059669u : 0x00C42B1Cu, S);
+                q6 = fb_text(q6, y2, "  failed ", T.fg2, S);
+                fb_num(q6, y2, ah->disk.reads_failed, T.fg, S);
+            }
+        }
+
+        y2 += LH + 12 * S;
         section(px, y2, "Input (PS/2)");
         y2 += LH + 2 * S;
         p = fb_text(px, y2, "mouse ", T.fg2, S);
         p = fb_num(p, y2, mouse_events, mouse_events ? 0x00059669u : 0x00C42B1Cu, S);
         p = fb_text(p, y2, "  keys ", T.fg2, S);
         fb_num(p, y2, key_events, key_events ? 0x00059669u : 0x00C42B1Cu, S);
+    } else if (set_page == 2) {
+        int n = pci_count();
+        int q = fb_text(px, py, "PCI bus - ", T.fg2, S);
+        q = fb_num(q, py, (uint32_t)n, T.fg, S);
+        fb_text(q, py, " devices found", T.fg2, S);
+
+        int y2 = py + LH + 6 * S, rowh = 32 * S;
+        for (int i = 0; i < n && y2 + rowh < oy + h - 4 * S; i++) {
+            const struct pci_dev *d = pci_get(i);
+            if (d->class_code == 0x02)           /* highlight the NIC */
+                fb_round(px - 6 * S, y2 - 4 * S, pw + 12 * S, rowh, RADS,
+                         blend(T.layer, accent, 0x22));
+            const char *dn = pci_device_name(d->vendor, d->device);
+            fb_text(px, y2, dn ? dn : pci_class_name(d->class_code, d->subclass),
+                    T.fg, S);
+            int p2 = fb_text(px, y2 + 15 * S, pci_vendor_name(d->vendor), T.fg2, S);
+            p2 = fb_text(p2, y2 + 15 * S, "  ", T.fg2, S);
+            p2 = hex16(p2, y2 + 15 * S, d->vendor, T.fg2);
+            p2 = fb_text(p2, y2 + 15 * S, ":", T.fg2, S);
+            hex16(p2, y2 + 15 * S, d->device, T.fg2);
+            y2 += rowh;
+        }
+        /* --- network status, straight from the driver --- */
+        const struct nic_info    *e = nic_get();
+        const struct net_state   *nst = net_get();
+        int ny = oy + h - 74 * S;
+        fb_fill(px, ny - 8 * S, pw, 1, T.stroke);
+        if (!e->present) {
+            fb_text(px, ny, "No supported network card", T.fg2, S);
+        } else {
+            int q2 = fb_text(px, ny, e->name, T.fg, S);
+            q2 = fb_text(q2, ny, "  ", T.fg2, S);
+            for (int i = 0; i < 6; i++) {
+                q2 = hex8(q2, ny, e->mac[i], T.fg);
+                if (i < 5) q2 = fb_text(q2, ny, ":", T.fg2, S);
+            }
+            q2 = fb_text(q2, ny, "   link ", T.fg2, S);
+            fb_text(q2, ny, e->link_up ? "up" : "down",
+                    e->link_up ? 0x00059669u : 0x00C42B1Cu, S);
+
+            int ry = ny + 17 * S;
+            int q3 = fb_text(px, ry, "tx ", T.fg2, S);
+            q3 = fb_num(q3, ry, e->tx_packets, T.fg, S);
+            q3 = fb_text(q3, ry, "/", T.fg2, S);
+            q3 = fb_num(q3, ry, e->tx_done, e->tx_done ? 0x00059669u : T.fg, S);
+            q3 = fb_text(q3, ry, "  rx ", T.fg2, S);
+            q3 = fb_num(q3, ry, e->rx_packets, T.fg, S);
+            q3 = fb_text(q3, ry, "  arp tx/rx ", T.fg2, S);
+            q3 = fb_num(q3, ry, nst->arp_tx, T.fg, S);
+            q3 = fb_text(q3, ry, "/", T.fg2, S);
+            fb_num(q3, ry, nst->arp_rx, T.fg, S);
+
+            int gy = ny + 34 * S;
+            if (nst->gw_resolved) {
+                int q4 = fb_text(px, gy, "gateway 10.0.2.2 is at ", 0x00059669u, S);
+                for (int i = 0; i < 6; i++) {
+                    q4 = hex8(q4, gy, nst->gw_mac[i], T.fg);
+                    if (i < 5) q4 = fb_text(q4, gy, ":", T.fg2, S);
+                }
+            } else {
+                fb_text(px, gy, "resolving gateway 10.0.2.2 ...", T.fg2, S);
+            }
+        }
     } else {
         icon(APP_ABOUT, px, py, 40 * S);
         text_bold(px + 52 * S, py + 2 * S, "Aurelian OS", T.fg, 2 * S);
@@ -632,6 +818,168 @@ static void draw_settings(int a)
         fb_text(px, y2, "Boot      Multiboot2 / GRUB", T.fg, S); y2 += LH + 8 * S;
         fb_text(px, y2, "Clean-room original work.", T.fg2, S);
     }
+}
+
+static const char *state_name(uint8_t s)
+{
+    switch (s) {
+    case TASK_READY:    return "ready";
+    case TASK_RUNNING:  return "running";
+    case TASK_SLEEPING: return "sleeping";
+    default:            return "-";
+    }
+}
+
+static void draw_tasks(int a)
+{
+    int ox = co_x(a), oy = co_y(a), w = co_w(a), h = co_h(a);
+    int px = ox + PAD, py = oy + PAD, pw = w - 2 * PAD;
+
+    int q = fb_text(px, py, "Kernel threads - ", T.fg2, S);
+    q = fb_num(q, py, (uint32_t)sched_count(), T.fg, S);
+    q = fb_text(q, py, "  switches ", T.fg2, S);
+    fb_num(q, py, (uint32_t)sched_switches(), T.fg, S);
+
+    /* column headers */
+    int ty = py + LH + 6 * S;
+    fb_text(px,             ty, "id", T.fg2, S);
+    fb_text(px + 28 * S,    ty, "name", T.fg2, S);
+    fb_text(px + 150 * S,   ty, "state", T.fg2, S);
+    fb_text(px + 240 * S,   ty, "slices", T.fg2, S);
+    fb_fill(px, ty + 18 * S, pw, 1, T.stroke);
+
+    int row = 22 * S, y2 = ty + 24 * S;
+    for (int i = 0; i < SCHED_MAX_TASKS; i++) {
+        const struct task *t = sched_task(i);
+        if (!t || t->state == TASK_FREE) continue;
+        int me = (i == sched_current());
+        if (me) fb_round(px - 6 * S, y2 - 2 * S, pw + 12 * S, row, RADS,
+                         blend(T.layer, accent, 0x20));
+        fb_num(px, y2, (uint32_t)t->id, T.fg2, S);
+        fb_text(px + 28 * S, y2, t->name, T.fg, S);
+        fb_text(px + 150 * S, y2, state_name(t->state),
+                t->state == TASK_RUNNING ? 0x00059669u : T.fg2, S);
+        fb_num(px + 240 * S, y2, (uint32_t)t->slices, T.fg, S);
+        y2 += row;
+    }
+
+    /* heap usage bar */
+    int hy = oy + h - 58 * S;
+    fb_fill(px, hy - 10 * S, pw, 1, T.stroke);
+    int p2 = fb_text(px, hy, "Heap ", T.fg2, S);
+    p2 = fb_num(p2, hy, (uint32_t)(heap_used() / 1024), T.fg, S);
+    p2 = fb_text(p2, hy, " / ", T.fg2, S);
+    p2 = fb_num(p2, hy, (uint32_t)(heap_total() / 1024), T.fg, S);
+    p2 = fb_text(p2, hy, " KiB   blocks ", T.fg2, S);
+    fb_num(p2, hy, heap_blocks(), T.fg, S);
+
+    int bw = pw, by = hy + LH + 2 * S;
+    uint64_t tot = heap_total() ? heap_total() : 1;
+    int fillw = (int)((uint64_t)bw * heap_used() / tot);
+    fb_round(px, by, bw, 10 * S, 5 * S, T.ctrl_lo);
+    if (fillw > 0) fb_round(px, by, fillw, 10 * S, 5 * S, accent);
+
+    int sy = by + 18 * S;
+    int p3 = fb_text(px, sy, "churn rounds ", T.fg2, S);
+    p3 = fb_num(p3, sy, churn_rounds, T.fg, S);
+    p3 = fb_text(p3, sy, "  alloc fails ", T.fg2, S);
+    fb_num(p3, sy, churn_fail, churn_fail ? 0x00C42B1Cu : 0x00059669u, S);
+}
+
+/* ---- Registry Editor -------------------------------------------------- */
+static int rg_key = -1;      /* selected key                */
+static int rg_sel;           /* selected value row          */
+
+/* Flatten the key tree into rows so it can be drawn and hit-tested simply. */
+#define RG_ROWS 24
+static int  rg_rowkey[RG_ROWS];
+static int  rg_rowdepth[RG_ROWS];
+static int  rg_nrows;
+
+static void rg_flatten(int key, int depth)
+{
+    if (rg_nrows >= RG_ROWS || depth > 4) return;
+    if (key != reg_root()) {
+        rg_rowkey[rg_nrows]   = key;
+        rg_rowdepth[rg_nrows] = depth;
+        rg_nrows++;
+    }
+    int n = reg_key_child_count(key);
+    for (int i = 0; i < n; i++)
+        rg_flatten(reg_key_child(key, i), depth + (key == reg_root() ? 0 : 1));
+}
+
+static void draw_regedit(int a)
+{
+    int ox = co_x(a), oy = co_y(a), w = co_w(a), h = co_h(a);
+    int tool = 30 * S, side = 190 * S, row = 22 * S;
+
+    if (rg_key < 0) rg_key = reg_key_luma();
+    rg_nrows = 0;
+    rg_flatten(reg_root(), 0);
+
+    /* path bar */
+    char path[96];
+    reg_key_path(rg_key, path, sizeof(path));
+    fb_round(ox + 8 * S, oy + 4 * S, w - 16 * S, 22 * S, RADS, T.layer2);
+    fb_round_border(ox + 8 * S, oy + 4 * S, w - 16 * S, 22 * S, RADS, 1, T.stroke, 0xFF);
+    fb_text(ox + 16 * S, oy + 7 * S, path, T.fg, S);
+
+    /* key tree */
+    fb_fill(ox, oy + tool, side, h - tool, T.layer2);
+    fb_fill(ox + side, oy + tool, 1, h - tool, T.stroke);
+    for (int i = 0; i < rg_nrows; i++) {
+        int ky = oy + tool + 6 * S + i * row;
+        if (ky + row > oy + h) break;
+        int on = (rg_rowkey[i] == rg_key);
+        int hv = in_r(cx, cy, ox + 4 * S, ky, side - 8 * S, row);
+        if (on || hv)
+            fb_round(ox + 4 * S, ky, side - 8 * S, row, RADS,
+                     on ? blend(T.layer2, accent, 0x30) : T.ctrl_hi);
+        if (on) fb_round(ox + 4 * S, ky + row / 4, 3 * S, row / 2, 2, accent);
+        int ind = 14 * S + rg_rowdepth[i] * 12 * S;
+        fb_text(ox + ind, ky + (row - 16 * S) / 2, reg_key_name(rg_rowkey[i]), T.fg, S);
+    }
+
+    /* values */
+    int lx = ox + side + 1, ly = oy + tool, lw = w - side - 1;
+    fb_text(lx + 12 * S, ly + 4 * S, "Name", T.fg2, S);
+    fb_text(lx + lw / 2, ly + 4 * S, "Type", T.fg2, S);
+    fb_text(lx + lw / 2 + 60 * S, ly + 4 * S, "Data", T.fg2, S);
+    fb_fill(lx + 8 * S, ly + 22 * S, lw - 16 * S, 1, T.stroke);
+
+    int n = reg_value_count(rg_key);
+    for (int i = 0; i < n; i++) {
+        int v  = reg_value_at(rg_key, i);
+        int vy = ly + 28 * S + i * row;
+        if (vy + row > oy + h) break;
+        int hv = in_r(cx, cy, lx + 6 * S, vy, lw - 12 * S, row);
+        if (i == rg_sel)
+            fb_round(lx + 6 * S, vy, lw - 12 * S, row, RADS, blend(T.layer, accent, 0x28));
+        else if (hv)
+            fb_round(lx + 6 * S, vy, lw - 12 * S, row, RADS, T.ctrl_hi);
+        int ty = vy + (row - 16 * S) / 2;
+        fb_text(lx + 12 * S, ty, reg_value_name(v), T.fg, S);
+        uint8_t t = reg_value_type(v);
+        fb_text(lx + lw / 2, ty, t == REG_DWORD ? "DWORD" : "SZ", T.fg2, S);
+        int dx = lx + lw / 2 + 60 * S;
+        if (t == REG_DWORD) {
+            uint32_t d = reg_value_dword(v);
+            /* colours read better as hex */
+            int isc = 0;
+            const char *nm = reg_value_name(v);
+            for (int k = 0; nm[k]; k++) if (nm[k] == 'C' && nm[k+1] == 'o') { isc = 1; break; }
+            if (isc) { dx = fb_text(dx, ty, "0x", T.fg2, S); hex16(dx + 0, ty, (uint16_t)(d >> 8), T.fg); }
+            else fb_num(dx, ty, d, T.fg, S);
+        } else {
+            fb_text(dx, ty, reg_value_str(v), T.fg, S);
+        }
+    }
+    if (n == 0) fb_text(lx + 16 * S, ly + 34 * S, "(no values)", T.fg2, S);
+
+    fb_text(ox + 12 * S, oy + h - 18 * S,
+            reg_is_persistent() ? "stored on disk - edits survive a restart"
+                                : "in memory only - no disk attached", T.fg2, S);
 }
 
 static void draw_about(int a)
@@ -646,8 +994,8 @@ static void draw_about(int a)
     fb_text(px, y2, "A from-scratch x86-64 operating system:", T.fg, S); y2 += LH;
     fb_text(px, y2, "own kernel, graphics stack and shell.", T.fg, S);   y2 += LH + 8 * S;
     section(px, y2, "Keyboard");                                          y2 += LH;
-    fb_text(px, y2, "F1-F8  launch apps    Esc  Start", T.fg2, S);        y2 += LH;
-    fb_text(px, y2, "F9  theme   F10  wallpaper", T.fg2, S);              y2 += LH;
+    fb_text(px, y2, "F1-F10  launch apps   Esc  Start", T.fg2, S);       y2 += LH;
+    fb_text(px, y2, "keypad -  theme    keypad +  wallpaper", T.fg2, S);  y2 += LH;
     fb_text(px, y2, "F11 next window       F12  close", T.fg2, S);
 
     (void)w;
@@ -660,6 +1008,9 @@ static void draw_window(int a, int focused)
 {
     struct win *W = &wins[a];
     int x = W->x, y = W->y, w = W->w, h = W->h;
+    /* slide up into place while opening */
+    int e = ease_out(W->anim);
+    y += ((ANIM_FULL - e) * 26 * S) / ANIM_FULL;
 
     fb_shadow(x, y, w, h, RAD, 9 * S);
     fb_mica_round(x, y, w, h, RAD, T.mica, T.mica_a);
@@ -696,6 +1047,8 @@ static void draw_window(int a, int focused)
     case APP_PAINT:    draw_paint(a);    break;
     case APP_TERM:     draw_term(a);     break;
     case APP_SETTINGS: draw_settings(a); break;
+    case APP_TASKS:    draw_tasks(a);    break;
+    case APP_REGEDIT:  draw_regedit(a);  break;
     default:           draw_about(a);    break;
     }
 
@@ -741,10 +1094,11 @@ static void draw_taskbar(void)
     for (int i = 0; i < APP_COUNT; i++, bx += pitch) {
         int running = wins[i].open;
         int focused = (top_app() == i);
-        int h2 = in_r(cx, cy, bx, byy, bs, bs);
-        if (h2 || (running && focused))
-            fb_round(bx, byy, bs, bs, RADS,
-                     (running && focused) ? blend(T.mica, T.fg, 0x1C) : T.ctrl_hi);
+        if (running && focused)
+            fb_round(bx, byy, bs, bs, RADS, blend(T.mica, T.fg, 0x1C));
+        if (hover_anim[i] > 0)                 /* smooth hover fade */
+            fb_round_a(bx, byy, bs, bs, RADS, T.ctrl_hi,
+                       (uint8_t)(ease_out(hover_anim[i]) * 220 / ANIM_FULL));
         icon(i, bx + (bs - 22 * S) / 2, byy + (bs - 22 * S) / 2, 22 * S);
         if (running) {
             int pw = (focused && !wins[i].min) ? 16 * S : 7 * S;
@@ -783,6 +1137,14 @@ static void draw_start(void)
 {
     int x, y, w, h;
     start_rect(&x, &y, &w, &h);
+    /* reveal: the panel grows upward out of the taskbar */
+    int se = ease_out(start_anim);
+    if (se < ANIM_FULL) {
+        int full = h;
+        h = (full * se) / ANIM_FULL;
+        y += full - h;
+        if (h < 8 * S) return;
+    }
     fb_shadow(x, y, w, h, RAD, 12 * S);
     fb_mica_round(x, y, w, h, RAD, T.mica, 0xE4);
     fb_round_border(x, y, w, h, RAD, 1, T.stroke, 0xFF);
@@ -860,6 +1222,7 @@ static void np_save(void)
         if (np_file < 0) return;
     }
     fs_write(np_file, np_buf, (uint32_t)np_len);
+    if (fs_persistent) fs_disk_save();   /* make the edit outlive the reboot */
     np_dirty = 0;
 }
 
@@ -1044,7 +1407,7 @@ static void app_click(int a, int lx, int ly)
         }
         int n = fs_child_count(ex_dir);
         for (int i = 0; i < n; i++) {
-            int ry = tool + 32 * S + i * row;
+            int ry = tool + 56 * S + i * row;      /* +24 for the RAM-disk note */
             if (in_r(lx, ly, side + 6 * S, ry, w - side - 12 * S, row)) {
                 int node = fs_child(ex_dir, i);
                 if (fs_is_dir(node)) { ex_dir = node; ex_sel = -1; }
@@ -1082,9 +1445,20 @@ static void app_click(int a, int lx, int ly)
             }
         if (in_r(lx, ly, w - 76 * S, 8 * S, 66 * S, 24 * S)) { paint_clear(); return; }
         paint_stroke(a);
+    } else if (a == APP_REGEDIT) {
+        int tool = 30 * S, side = 190 * S, row = 22 * S;
+        for (int i = 0; i < rg_nrows; i++)
+            if (in_r(lx, ly, 4 * S, tool + 6 * S + i * row, side - 8 * S, row)) {
+                rg_key = rg_rowkey[i]; rg_sel = 0; return;
+            }
+        int n = reg_value_count(rg_key);
+        for (int i = 0; i < n; i++)
+            if (in_r(lx, ly, side + 6 * S, tool + 28 * S + i * row, w - side - 12 * S, row)) {
+                rg_sel = i; return;
+            }
     } else if (a == APP_SETTINGS) {
         int nav = 140 * S;
-        for (int i = 0; i < 3; i++)
+        for (int i = 0; i < 4; i++)
             if (in_r(lx, ly, 6 * S, 12 * S + i * 32 * S, nav - 12 * S, 28 * S)) {
                 set_page = i; return;
             }
@@ -1092,12 +1466,22 @@ static void app_click(int a, int lx, int ly)
         int px = nav + PAD, py = PAD, pw = w - nav - 2 * PAD;
         for (int i = 0; i < 8; i++)
             if (in_r(lx, ly, px + i * 34 * S, py + LH + 4 * S, 26 * S, 26 * S)) {
-                accent = ACCENTS[i]; return;
+                accent = ACCENTS[i];
+                if (reg_key_luma() >= 0) {
+                    reg_set_dword(reg_key_luma(), "AccentColour", accent);
+                    reg_save();
+                }
+                return;
             }
         int ty2 = py + LH + 48 * S, sw = 84 * S;
         for (int i = 0; i < 2; i++)
             if (in_r(lx, ly, px + i * (sw + 8 * S), ty2 + LH + 4 * S, sw, 28 * S)) {
-                dark_mode = i; theme_apply(); return;
+                dark_mode = i; theme_apply();
+                if (reg_key_luma() >= 0) {
+                    reg_set_dword(reg_key_luma(), "DarkMode", (uint32_t)dark_mode);
+                    reg_save();
+                }
+                return;
             }
         int wy = ty2 + LH + 44 * S;
         int tw = 76 * S, th = 54 * S, gap = 8 * S;
@@ -1105,7 +1489,12 @@ static void app_click(int a, int lx, int ly)
         for (int k = 0; k < wp_count; k++) {
             int c = k % perrow, r = k / perrow;
             if (in_r(lx, ly, px + c * (tw + gap), wy + LH + 4 * S + r * (th + gap), tw, th)) {
-                wallpaper_select(k); return;
+                wallpaper_select(k);
+                if (reg_key_luma() >= 0) {
+                    reg_set_dword(reg_key_luma(), "Wallpaper", (uint32_t)k);
+                    reg_save();
+                }
+                return;
             }
         }
     }
@@ -1115,6 +1504,34 @@ static void app_click(int a, int lx, int ly)
  * Extended (E0-prefixed) keys arrive with bit 7 set — see keyboard.c. */
 static int app_keycode(int a, uint8_t k)
 {
+    if (a == APP_SETTINGS) {
+        /* 1..4 jump to a Settings page (it has no text fields to conflict) */
+        if (k >= 0x02 && k <= 0x05) { set_page = k - 0x02; return 1; }
+        return 0;
+    }
+    if (a == APP_REGEDIT) {
+        switch (k) {
+        case 0xC8: {                                /* up: previous key   */
+            for (int i = 1; i < rg_nrows; i++)
+                if (rg_rowkey[i] == rg_key) { rg_key = rg_rowkey[i - 1]; rg_sel = 0; break; }
+            return 1;
+        }
+        case 0xD0: {                                /* down: next key     */
+            for (int i = 0; i < rg_nrows - 1; i++)
+                if (rg_rowkey[i] == rg_key) { rg_key = rg_rowkey[i + 1]; rg_sel = 0; break; }
+            return 1;
+        }
+        case 0xCD:                                  /* right: next value  */
+            if (reg_value_count(rg_key) > 0)
+                rg_sel = (rg_sel + 1) % reg_value_count(rg_key);
+            return 1;
+        case 0xCB:                                  /* left: prev value   */
+            if (reg_value_count(rg_key) > 0)
+                rg_sel = (rg_sel + reg_value_count(rg_key) - 1) % reg_value_count(rg_key);
+            return 1;
+        default: return 0;
+        }
+    }
     if (a == APP_EXPLORER) {
         int n = fs_child_count(ex_dir);
         switch (k) {
@@ -1237,14 +1654,94 @@ static void on_press(void)
 }
 
 /* ================================================================== */
-/* 16. Entry                                                           */
+/* 16. Background kernel threads                                       */
+/*                                                                     */
+/* These exist to prove the scheduler and heap actually work rather     */
+/* than merely compile: one hammers the allocator while being preempted */
+/* (which would corrupt the free list or fault if either were wrong),   */
+/* the other just sleeps and counts, exercising the timed wake path.    */
+/* ================================================================== */
+static void task_heap_churn(void)
+{
+    void *p[6];
+    for (;;) {
+        for (int i = 0; i < 6; i++) {
+            p[i] = kmalloc(64u << i);              /* 64 B .. 2 KiB */
+            if (!p[i]) churn_fail++;
+            else ((uint8_t *)p[i])[0] = (uint8_t)i; /* touch it */
+        }
+        for (int i = 5; i >= 0; i--) kfree(p[i]);   /* free out of order */
+        churn_rounds++;
+        sched_sleep(10);                            /* 100 ms */
+    }
+}
+
+/* Service the NIC: retry ARP until the gateway answers, then keep draining
+ * the receive ring. Polled from its own thread rather than an IRQ. */
+static void task_net(void)
+{
+    /* Wait for the link before sending anything: transmitting into a link that
+     * is still negotiating leaves the descriptors unretired. */
+    for (int i = 0; i < 60 && !nic_get()->link_up; i++) {
+        nic_poll();
+        sched_sleep(10);                   /* 100 ms per attempt, up to ~6 s */
+    }
+    int reported = 0;
+    for (;;) {
+        const struct net_state *n = net_get();
+        if (!n->gw_resolved && (n->arp_tx == 0 || (timer_ticks() % 200) < 10)) {
+            nic_poll();
+            net_arp_request();
+        }
+        nic_poll();
+        net_poll();
+
+        /* Once the gateway has answered, say so with the counters attached.
+         * tx_done is the one that matters: it only advances when the device
+         * writes a buffer back through the used ring, which is precisely what
+         * never happened while bus mastering was off. */
+        if (n->gw_resolved && !reported) {
+            const struct nic_info *c = nic_get();
+            reported = 1;
+            serial_write("[nic] ");        serial_write(c->name);
+            serial_write(" tx ");          serial_write_u64(c->tx_packets);
+            serial_write(" confirmed ");   serial_write_u64(c->tx_done);
+            serial_write(" rx ");          serial_write_u64(c->rx_packets);
+            serial_write("\n");
+        }
+        sched_sleep(5);
+    }
+}
+
+static void task_counter(void)
+{
+    for (;;) {
+        counter_ticks++;
+        sched_sleep(100);                           /* 1 s */
+    }
+}
+
+/* ================================================================== */
+/* 17. Entry                                                           */
 /* ================================================================== */
 void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
                uint32_t mem_kib)
 {
     metrics_init();
     theme_apply();
-    fs_init();
+    fs_mount();      /* prefer the on-disk tree */
+    reg_mount();
+
+    /* The registry, not the source, decides how the desktop looks. Anything
+     * changed in Settings is written back below, so it survives a restart. */
+    {
+        int lk = reg_key_luma();
+        if (lk >= 0) {
+            accent    = reg_get_dword(lk, "AccentColour", accent);
+            dark_mode = (int)reg_get_dword(lk, "DarkMode", (uint32_t)dark_mode);
+            theme_apply();
+        }
+    }
     g_mem_kib = mem_kib;
     tb_btn = 44;
 
@@ -1263,7 +1760,14 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
             }
         }
     }
-    if (wp_count > 0) wallpaper_select(0);
+    if (wp_count > 0) {
+        int want = 0;
+        if (reg_key_luma() >= 0)
+            want = (int)reg_get_dword(reg_key_luma(), "Wallpaper", 0);
+        if (want < 0 || want >= wp_count) want = 0;
+        wp_active = -1;
+        wallpaper_select(want);
+    }
     else              fb_set_wallpaper_gradient(0x00243B7Au, 0x000C1024u);
 
     /* window sizes (scaled, clamped to the screen) */
@@ -1273,7 +1777,9 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
     wins[APP_CLOCK]    = (struct win){ 0,0, 340*S, 210*S, 0,0 };
     wins[APP_PAINT]    = (struct win){ 0,0, 560*S, 380*S, 0,0 };
     wins[APP_TERM]     = (struct win){ 0,0, 540*S, 320*S, 0,0 };
-    wins[APP_SETTINGS] = (struct win){ 0,0, 620*S, 430*S, 0,0 };
+    wins[APP_SETTINGS] = (struct win){ 0,0, 620*S, 480*S, 0,0 };
+    wins[APP_TASKS]    = (struct win){ 0,0, 520*S, 400*S, 0,0 };
+    wins[APP_REGEDIT]  = (struct win){ 0,0, 620*S, 400*S, 0,0 };
     wins[APP_ABOUT]    = (struct win){ 0,0, 430*S, 330*S, 0,0 };
     for (int i = 0; i < APP_COUNT; i++) {
         if (wins[i].w > SW - 20 * S) wins[i].w = SW - 20 * S;
@@ -1286,6 +1792,10 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
 
     cx = SW / 2; cy = SH / 2;
     open_app(APP_ABOUT);
+
+    sched_spawn("heap-churn", task_heap_churn, 16384);
+    sched_spawn("counter",    task_counter,    16384);
+    if (nic_get()->present) sched_spawn("net", task_net, 16384);
 
     serial_write("[shell] Luma Shell running (");
     serial_write_u64((uint64_t)SW); serial_write("x");
@@ -1323,12 +1833,24 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
             } else if (e.type == INPUT_KEY_DOWN) {
                 key_events++;
                 uint8_t k = e.keycode;
-                if (k >= 0x3B && k <= 0x42) {           /* F1..F8 launch apps  */
+                if (k >= 0x3B && k <= 0x44 &&
+                    (int)(k - 0x3B) < APP_COUNT) {       /* F1..F10 launch apps */
                     open_app(k - 0x3B); start_open = 0;
-                } else if (k == 0x43) {                  /* F9  theme          */
-                    dark_mode = !dark_mode; theme_apply();
-                } else if (k == 0x44) {                  /* F10 next wallpaper */
-                    if (wp_count) wallpaper_select((wp_active + 1) % wp_count);
+                } else if (k == 0x4A) {                  /* keypad -  theme    */
+                    dark_mode = !dark_mode;
+                    theme_apply();
+                    if (reg_key_luma() >= 0) {
+                        reg_set_dword(reg_key_luma(), "DarkMode", (uint32_t)dark_mode);
+                        reg_save();
+                    }
+                } else if (k == 0x4E) {                  /* keypad +  wallpaper */
+                    if (wp_count) {
+                        wallpaper_select((wp_active + 1) % wp_count);
+                        if (reg_key_luma() >= 0) {
+                            reg_set_dword(reg_key_luma(), "Wallpaper", (uint32_t)wp_active);
+                            reg_save();
+                        }
+                    }
                 } else if (k == 0x57) {                  /* F11 cycle windows  */
                     if (zn > 1) {
                         int f = zlist[zn - 1];
@@ -1349,7 +1871,34 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
         uint64_t half = timer_ticks() / 50;      /* 2 Hz: clocks + caret blink */
         if (half != last) { last = half; dirty = 1; }
 
-        if (dirty) compose();
+        /* advance animations; while any is in flight we redraw every timer
+         * tick (100 Hz), which is what makes the motion smooth. */
+        int moving = 0;
+        for (int i = 0; i < APP_COUNT; i++)
+            if (wins[i].open && wins[i].anim < ANIM_FULL) {
+                wins[i].anim = (int16_t)step_toward(wins[i].anim, ANIM_FULL, 22);
+                moving = 1;
+            }
+        {
+            int target = start_open ? ANIM_FULL : 0;
+            if (start_anim != target) {
+                start_anim = step_toward(start_anim, target, 34);
+                moving = 1;
+            }
+        }
+        for (int i = 0; i < APP_COUNT; i++) {
+            int pitch = tb_btn * S, bs = 38 * S;
+            int bx = taskbar_cluster_x() + pitch * (i + 1);
+            int byy = SH - TASKH + (TASKH - bs) / 2;
+            int want = in_r(cx, cy, bx, byy, bs, bs) ? ANIM_FULL : 0;
+            if (hover_anim[i] != want) {
+                hover_anim[i] = step_toward(hover_anim[i], want, 40);
+                moving = 1;
+            }
+        }
+        if (fb_fade_step(14)) moving = 1;
+
+        if (dirty || moving) compose();
         __asm__ volatile ("hlt");
     }
 }

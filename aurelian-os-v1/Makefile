@@ -30,11 +30,20 @@ CFLAGS  := -m64 -ffreestanding -fno-pie -fno-stack-protector \
 	   -Ikernel/include -Ikernel/arch/x86_64
 LDFLAGS := -m elf_x86_64 -T kernel/arch/x86_64/linker.ld -nostdlib -z noexecstack
 
+# Stamp the build with the commit it came from. The verification harness greps
+# the finished ISO for this string, which is the only reliable way to prove the
+# artifact under test is the code that was just written (comments and file
+# timestamps do not survive compilation).
+# AUR_REV, when set by CI, is the real source commit; the repository's own HEAD
+# is a merge commit on pull_request events and would identify the wrong thing.
+REV := $(if $(AUR_REV),$(shell echo $(AUR_REV) | cut -c1-7),$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown))
+CFLAGS += -DBUILD_REV=\"$(REV)\"
+
 # ---- sources ----
 C_SRCS  := kernel/kernel.c kernel/vga.c kernel/string.c kernel/fb.c \
 	   kernel/serial.c kernel/idt.c kernel/pic.c kernel/input.c \
 	   kernel/pit.c kernel/keyboard.c kernel/mouse.c kernel/rtc.c \
-	   kernel/fs.c kernel/shell.c kernel/arch/x86_64/gdt.c
+	   kernel/fs.c kernel/pci.c kernel/reg.c kernel/heap.c kernel/sched.c kernel/e1000.c kernel/virtio_net.c kernel/nic.c kernel/net.c kernel/ahci.c kernel/shell.c kernel/arch/x86_64/gdt.c
 ASM_SRCS := kernel/arch/x86_64/boot.S kernel/arch/x86_64/gdt_flush.S \
 	   kernel/arch/x86_64/isr.S
 OBJ     := $(C_SRCS:.c=.o) $(ASM_SRCS:.S=.o)

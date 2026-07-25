@@ -49,15 +49,19 @@ static inline uint32_t shade(uint32_t c, int amt)
     int r = (int)((c >> 16) & 0xFF) + amt;
     int g = (int)((c >> 8) & 0xFF) + amt;
     int b = (int)(c & 0xFF) + amt;
-    if (r < 0) r = 0; if (r > 255) r = 255;
-    if (g < 0) g = 0; if (g > 255) g = 255;
-    if (b < 0) b = 0; if (b > 255) b = 255;
+    if (r < 0) r = 0;
+    if (r > 255) r = 255;
+    if (g < 0) g = 0;
+    if (g > 255) g = 255;
+    if (b < 0) b = 0;
+    if (b > 255) b = 255;
     return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 
 /* `backbuffer` and `bgbuffer` must each hold width*height uint32 pixels; the
  * kernel allocates them from free physical memory rather than .bss. */
-int  fb_init(const struct fb_info *info, uint32_t *backbuffer, uint32_t *bgbuffer);
+int  fb_init(const struct fb_info *info, uint32_t *backbuffer, uint32_t *bgbuffer,
+             uint32_t *fadebuffer);
 int  fb_ready(void);
 int  fb_width(void);
 int  fb_height(void);
@@ -91,6 +95,11 @@ void     fb_set_wallpaper(const void *src, uint32_t sw, uint32_t sh);
 void     fb_set_wallpaper_gradient(uint32_t top, uint32_t bottom);
 /* Copy the cached background into the backbuffer (start of each frame). */
 void     fb_draw_background(void);
+/* Snapshot the current background so the next fb_set_wallpaper() cross-fades
+ * into it; fb_fade_step() advances the blend and returns 1 while active. */
+void     fb_fade_begin(void);
+int      fb_fade_step(int delta);
+int      fb_fade_active(void);
 /* Sample the blurred wallpaper at a screen coordinate — the Mica base. */
 uint32_t fb_mica_at(int x, int y);
 /* Mica-filled rounded rect: blurred wallpaper tinted with `tint`. */
