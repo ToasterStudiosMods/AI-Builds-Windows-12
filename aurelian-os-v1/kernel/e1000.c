@@ -191,6 +191,17 @@ int e1000_init(void)
         txd[i].status = TXD_STAT_DD;           /* free */
     }
 
+    /* Program our address into receive-address slot 0 and set Address Valid.
+     * Reading RAL/RAH is not enough: unless AV is set the card filters out
+     * unicast frames addressed to us, so broadcast ARP requests go out but the
+     * unicast reply is silently dropped — tx climbs while rx stays at zero. */
+    wr(REG_RAL0, (uint32_t)st.mac[0] | ((uint32_t)st.mac[1] << 8) |
+                 ((uint32_t)st.mac[2] << 16) | ((uint32_t)st.mac[3] << 24));
+    wr(REG_RAH0, (uint32_t)st.mac[4] | ((uint32_t)st.mac[5] << 8) | (1u << 31));
+
+    /* Clear the multicast table array so stale entries cannot match. */
+    for (uint32_t i = 0; i < 128; i++) wr(0x5200 + i * 4, 0);
+
     /* Receive ring */
     wr(REG_RDBAL, (uint32_t)((uint64_t)(uintptr_t)rxd & 0xFFFFFFFFu));
     wr(REG_RDBAH, (uint32_t)((uint64_t)(uintptr_t)rxd >> 32));
@@ -236,6 +247,12 @@ int e1000_send(const void *frame, uint16_t len)
     tx_next = (tx_next + 1) % NTX;
     wr(REG_TDT, tx_next);                              /* hand it to the card */
     st.tx_packets++;
+
+    /* Wait briefly for the descriptor to be written back. This distinguishes
+     * "queued" from "actually sent", which matters when debugging: a rising
+     * tx_packets with a flat tx_done means the card never consumed it. */
+    for (int spin = 0; spin < 200000; spin++)
+        if (t->status & TXD_STAT_DD) { st.tx_done++; break; }
     return 1;
 }
 

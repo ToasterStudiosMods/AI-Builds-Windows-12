@@ -18,7 +18,7 @@ struct e1000_state {
     int      link_up;
     uint64_t mmio;              /* register window (physical == virtual) */
     uint8_t  mac[6];
-    uint32_t tx_packets, rx_packets, rx_errors;
+    uint32_t tx_packets, tx_done, rx_packets, rx_errors;
     uint16_t last_rx_len;
 };
 

@@ -21,6 +21,7 @@
 #include "mem.h"
 #include "e1000.h"
 #include "net.h"
+#include "ahci.h"
 #include "serial.h"
 #include "string.h"
 #include <stdint.h>
@@ -687,6 +688,37 @@ static void draw_settings(int a)
         fb_text(p, y2, "s", T.fg, S);
 
         y2 += LH + 12 * S;
+        section(px, y2, "Storage");
+        y2 += LH + 2 * S;
+        {
+            const struct ahci_state *ah = ahci_get();
+            if (!ah->present) {
+                fb_text(px, y2, "no AHCI controller", T.fg2, S);
+            } else if (!ah->disk.present) {
+                fb_text(px, y2, "AHCI up, no SATA disk attached", T.fg2, S);
+                y2 += LH;
+                fb_text(px, y2, "(optical media needs SCSI packets)", T.fg2, S);
+            } else {
+                fb_text(px, y2, ah->disk.model, T.fg, S);
+                y2 += LH;
+                /* 512-byte sectors -> MiB */
+                int q5 = fb_num(px, y2, (uint32_t)(ah->disk.sectors / 2048), T.fg, S);
+                q5 = fb_text(q5, y2, " MiB   LBA0 ", T.fg2, S);
+                const uint8_t *sec = ahci_first_sector();
+                for (int i = 0; i < 4; i++) {
+                    q5 = hex8(q5, y2, sec[i], T.fg);
+                    q5 = fb_text(q5, y2, " ", T.fg2, S);
+                }
+                y2 += LH;
+                int q6 = fb_text(px, y2, "reads ok ", T.fg2, S);
+                q6 = fb_num(q6, y2, ah->disk.reads_ok,
+                            ah->disk.reads_ok ? 0x00059669u : 0x00C42B1Cu, S);
+                q6 = fb_text(q6, y2, "  failed ", T.fg2, S);
+                fb_num(q6, y2, ah->disk.reads_failed, T.fg, S);
+            }
+        }
+
+        y2 += LH + 12 * S;
         section(px, y2, "Input (PS/2)");
         y2 += LH + 2 * S;
         p = fb_text(px, y2, "mouse ", T.fg2, S);
@@ -735,6 +767,8 @@ static void draw_settings(int a)
             int ry = ny + 17 * S;
             int q3 = fb_text(px, ry, "tx ", T.fg2, S);
             q3 = fb_num(q3, ry, e->tx_packets, T.fg, S);
+            q3 = fb_text(q3, ry, "/", T.fg2, S);
+            q3 = fb_num(q3, ry, e->tx_done, e->tx_done ? 0x00059669u : T.fg, S);
             q3 = fb_text(q3, ry, "  rx ", T.fg2, S);
             q3 = fb_num(q3, ry, e->rx_packets, T.fg, S);
             q3 = fb_text(q3, ry, "  arp tx/rx ", T.fg2, S);
@@ -1537,7 +1571,7 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
     wins[APP_CLOCK]    = (struct win){ 0,0, 340*S, 210*S, 0,0 };
     wins[APP_PAINT]    = (struct win){ 0,0, 560*S, 380*S, 0,0 };
     wins[APP_TERM]     = (struct win){ 0,0, 540*S, 320*S, 0,0 };
-    wins[APP_SETTINGS] = (struct win){ 0,0, 620*S, 430*S, 0,0 };
+    wins[APP_SETTINGS] = (struct win){ 0,0, 620*S, 480*S, 0,0 };
     wins[APP_TASKS]    = (struct win){ 0,0, 520*S, 400*S, 0,0 };
     wins[APP_ABOUT]    = (struct win){ 0,0, 430*S, 330*S, 0,0 };
     for (int i = 0; i < APP_COUNT; i++) {

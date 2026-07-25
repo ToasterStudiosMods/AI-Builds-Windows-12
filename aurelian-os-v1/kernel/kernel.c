@@ -22,6 +22,7 @@
 #include "sched.h"
 #include "e1000.h"
 #include "net.h"
+#include "ahci.h"
 #include "pci.h"
 #include <stdarg.h>
 
@@ -279,6 +280,7 @@ void kmain(uint64_t mbi2_info)
         sched_init("luma-shell");
         pci_scan();
         if (e1000_init()) net_init();
+        ahci_init();
         interrupts_enable();
         serial_write("[drv] drivers up; starting Luma Shell (");
         serial_write_u64((uint64_t)bf.nwp); serial_write(" wallpapers).\n");
