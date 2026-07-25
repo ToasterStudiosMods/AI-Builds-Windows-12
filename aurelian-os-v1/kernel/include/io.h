@@ -20,6 +20,18 @@ static inline uint8_t inb(uint16_t port)
     return ret;
 }
 
+static inline void outl(uint16_t port, uint32_t val)
+{
+    __asm__ volatile ("outl %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint32_t inl(uint16_t port)
+{
+    uint32_t ret;
+    __asm__ volatile ("inl %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
 /* Short delay by writing to an unused port (POST diagnostic port 0x80). */
 static inline void io_wait(void)
 {

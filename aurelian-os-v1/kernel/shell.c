@@ -16,6 +16,7 @@
 #include "input.h"
 #include "timer.h"
 #include "rtc.h"
+#include "pci.h"
 #include "serial.h"
 #include "string.h"
 #include <stdint.h>
@@ -106,6 +107,16 @@ static int str_pre(const char *s, const char *pre)
 
 static int text_bold(int x, int y, const char *s, uint32_t c, int sc)
 { fb_text(x, y, s, c, sc); return fb_text(x + 1, y, s, c, sc); }
+
+/* 4-digit hex, for PCI ids. */
+static int hex16(int x, int y, uint16_t v, uint32_t c)
+{
+    static const char *H = "0123456789ABCDEF";
+    char b[5];
+    for (int i = 0; i < 4; i++) b[i] = H[(v >> ((3 - i) * 4)) & 0xF];
+    b[4] = 0;
+    return fb_text(x, y, b, c, S);
+}
 
 /* cursor position, needed for hover states */
 static int cx, cy;
@@ -348,6 +359,13 @@ static void draw_explorer(int a)
 
     /* header + file list */
     int lx = ox + side + 1, ly = oy + tool, lw = w - side - 1;
+
+    /* Be upfront about what this is: an in-memory tree, not a disk. */
+    fb_fill_a(lx, ly, lw, 22 * S, 0x00F5BE4Bu, dark_mode ? 0x22 : 0x38);
+    fb_text(lx + 12 * S, ly + 3 * S,
+            "RAM disk - in memory only, resets on restart", T.fg2, S);
+    ly += 24 * S;
+
     fb_text(lx + 14 * S, ly + 6 * S, "Name", T.fg2, S);
     fb_text(lx + lw - 76 * S, ly + 6 * S, "Size", T.fg2, S);
     fb_fill(lx + 10 * S, ly + 26 * S, lw - 20 * S, 1, T.stroke);
@@ -531,8 +549,8 @@ static void draw_settings(int a)
     int nav = 140 * S;
     fb_fill(ox, oy, nav, h, T.layer2);
     fb_fill(ox + nav, oy, 1, h, T.stroke);
-    static const char *pages[3] = { "Personalise", "System", "About" };
-    for (int i = 0; i < 3; i++) {
+    static const char *pages[4] = { "Personalise", "System", "Devices", "About" };
+    for (int i = 0; i < 4; i++) {
         int iy = oy + 12 * S + i * 32 * S;
         int on = (set_page == i);
         int hv = in_r(cx, cy, ox + 6 * S, iy, nav - 12 * S, 28 * S);
@@ -621,6 +639,32 @@ static void draw_settings(int a)
         p = fb_num(p, y2, mouse_events, mouse_events ? 0x00059669u : 0x00C42B1Cu, S);
         p = fb_text(p, y2, "  keys ", T.fg2, S);
         fb_num(p, y2, key_events, key_events ? 0x00059669u : 0x00C42B1Cu, S);
+    } else if (set_page == 2) {
+        int n = pci_count();
+        int q = fb_text(px, py, "PCI bus - ", T.fg2, S);
+        q = fb_num(q, py, (uint32_t)n, T.fg, S);
+        fb_text(q, py, " devices found", T.fg2, S);
+
+        int y2 = py + LH + 6 * S, rowh = 32 * S;
+        for (int i = 0; i < n && y2 + rowh < oy + h - 4 * S; i++) {
+            const struct pci_dev *d = pci_get(i);
+            if (d->class_code == 0x02)           /* highlight the NIC */
+                fb_round(px - 6 * S, y2 - 4 * S, pw + 12 * S, rowh, RADS,
+                         blend(T.layer, accent, 0x22));
+            const char *dn = pci_device_name(d->vendor, d->device);
+            fb_text(px, y2, dn ? dn : pci_class_name(d->class_code, d->subclass),
+                    T.fg, S);
+            int p2 = fb_text(px, y2 + 15 * S, pci_vendor_name(d->vendor), T.fg2, S);
+            p2 = fb_text(p2, y2 + 15 * S, "  ", T.fg2, S);
+            p2 = hex16(p2, y2 + 15 * S, d->vendor, T.fg2);
+            p2 = fb_text(p2, y2 + 15 * S, ":", T.fg2, S);
+            hex16(p2, y2 + 15 * S, d->device, T.fg2);
+            y2 += rowh;
+        }
+        int nic = pci_find_network();
+        fb_text(px, oy + h - 22 * S,
+                nic >= 0 ? "Ethernet controller present - no driver yet"
+                         : "no network controller found", T.fg2, S);
     } else {
         icon(APP_ABOUT, px, py, 40 * S);
         text_bold(px + 52 * S, py + 2 * S, "Aurelian OS", T.fg, 2 * S);
@@ -1044,7 +1088,7 @@ static void app_click(int a, int lx, int ly)
         }
         int n = fs_child_count(ex_dir);
         for (int i = 0; i < n; i++) {
-            int ry = tool + 32 * S + i * row;
+            int ry = tool + 56 * S + i * row;      /* +24 for the RAM-disk note */
             if (in_r(lx, ly, side + 6 * S, ry, w - side - 12 * S, row)) {
                 int node = fs_child(ex_dir, i);
                 if (fs_is_dir(node)) { ex_dir = node; ex_sel = -1; }
@@ -1084,7 +1128,7 @@ static void app_click(int a, int lx, int ly)
         paint_stroke(a);
     } else if (a == APP_SETTINGS) {
         int nav = 140 * S;
-        for (int i = 0; i < 3; i++)
+        for (int i = 0; i < 4; i++)
             if (in_r(lx, ly, 6 * S, 12 * S + i * 32 * S, nav - 12 * S, 28 * S)) {
                 set_page = i; return;
             }
@@ -1245,6 +1289,7 @@ void shell_run(int nwp, const uint64_t *wp_addr, const uint32_t *wp_size,
     metrics_init();
     theme_apply();
     fs_init();
+    pci_scan();
     g_mem_kib = mem_kib;
     tb_btn = 44;
 

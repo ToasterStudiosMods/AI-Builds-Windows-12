@@ -103,6 +103,20 @@ void fs_init(void)
     add_node(sys, "license.txt", 0,
         "Original clean-room implementation.\n"
         "No Microsoft code or assets.\n");
+    add_node(sys, "READ-THIS.txt", 0,
+        "This is NOT a real system folder.\n\n"
+        "There is no disk driver and no real\n"
+        "filesystem yet. Every folder and file\n"
+        "you can see is a small tree built in RAM\n"
+        "at boot by kernel/fs.c - it does not\n"
+        "contain the operating system, and it is\n"
+        "not stored on the disc you booted from.\n\n"
+        "Edits are kept in memory only and are\n"
+        "gone on the next restart.\n\n"
+        "Real storage needs, in order:\n"
+        "  1. PCI enumeration        (done)\n"
+        "  2. AHCI/SATA disk driver  (todo)\n"
+        "  3. a real filesystem      (todo)\n");
 }
 
 int fs_root(void) { return 0; }
